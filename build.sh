@@ -10,20 +10,23 @@ if [[ -z ${N64_INST-} ]]; then
   exit 1
 fi
 
-if [[ $OSTYPE == 'darwin'* ]]; then
-  if command -v brew >/dev/null; then
-    brew install libpng
-    CFLAGS="-I$(brew --prefix)/include"
-    LDFLAGS="-L$(brew --prefix)/lib"
+if [[ $OSTYPE == 'msys' ]]; then
+  if [ "${MSYSTEM:-}" != "MINGW64" ]; then
+    # We only support building host tools via mingw-x64 at the moment, so
+    # enforce that to help users during installation.
+    echo This script must be run from the \"MSYS2 MinGW x64\" shell
+    echo Plase open that shell and run it again from there
+    exit 1
   fi
 fi
 
-CFLAGS=${CFLAGS:-}; export CFLAGS
-LDFLAGS=${LDFLAGS:-}; export LDFLAGS
-
 makeWithParams(){
+  make -j"${JOBS}" "$@"
+}
+
+sudoMakeWithParams(){
   make -j"${JOBS}" "$@" || \
-    sudo env N64_INST="$N64_INST" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
+    sudo env N64_INST="$N64_INST" \
       make -j"${JOBS}" "$@"
 }
 
@@ -32,8 +35,10 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN)}"
 JOBS="${JOBS:-1}" # If getconf returned nothing, default to 1
 
 # Clean, build, and install libdragon + tools
+sudoMakeWithParams install-mk
 makeWithParams clobber
-makeWithParams install tools-install
+makeWithParams libdragon tools
+sudoMakeWithParams install tools-install
 
 # Build examples and tests - libdragon must be already installed at this point,
 # so first clobber the build to make sure that everything works against the
@@ -41,3 +46,6 @@ makeWithParams install tools-install
 makeWithParams clobber
 makeWithParams examples
 makeWithParams test
+
+echo
+echo Libdragon built successfully!

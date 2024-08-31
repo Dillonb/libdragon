@@ -1,6 +1,8 @@
 #include <rsp_queue.inc>
+#include "test_rspq_constants.h"
 
 #define ASSERT_GP_BACKWARD           0xF001   // Also defined in test_rspq.c
+#define ASSERT_TOO_MANY_NOPS         0xF002
 
     .set noreorder
     .set at
@@ -16,8 +18,10 @@
         RSPQ_DefineCommand command_reset,     4      # 0x05
         RSPQ_DefineCommand command_test_high, 4      # 0x06
         RSPQ_DefineCommand command_reset_log, 4      # 0x07
-        RSPQ_DefineCommand command_big,       132    # 0x08
+        RSPQ_DefineCommand command_big,       TEST_RSPQ_BIG_COMMAND_SIZE*4    # 0x08
         RSPQ_DefineCommand command_big_out,   8      # 0x09
+        RSPQ_DefineCommand command_send_rdp,  8      # 0x0A
+        RSPQ_DefineCommand command_send_rdp_many,  4 # 0x0B
 	RSPQ_EndOverlayHeader
 
     RSPQ_BeginSavedState
@@ -28,13 +32,16 @@ TEST_PADDING2:  .long 0
 TEST_VARIABLE2: .long 0
     RSPQ_EndSavedState
 
+TEST_RDP_STAGING: .quad 0
+
 BIG_LOG_PTR: .long 0
+#define BIG_LOG_SIZE 2048
 
     .align 10
-BIG_LOG:  .ds.b 2048
+BIG_LOG:  .ds.b BIG_LOG_SIZE
 
     .align 2
-TEST_BIG: .ds.b 128
+TEST_BIG: .ds.b TEST_RSPQ_BIG_PAYLOAD_SIZE
 
     .text
 
@@ -46,6 +53,7 @@ command_test:
     sw t0, %lo(TEST_VARIABLE)
 
 command_test_high:
+
     # Compare the last entry in the big log with the current command (RDRAM+GP).
     # If RDRAM pointer is the same, but GP is less than before, it means that
     # GP has moved backward in the same buffer, and this is surely an error.
@@ -110,8 +118,31 @@ command_reset_log:
     jr ra
     sw zero, %lo(BIG_LOG_PTR)
 
+command_send_rdp:
+    li s4, %lo(TEST_RDP_STAGING)
+    li s3, %lo(TEST_RDP_STAGING) + 8
+    sw zero, 0(s4)
+    j RDPQ_Send
+    sw a1, 4(s4)
+
+command_send_rdp_many:
+    and a0, 0x00FFFFFF
+    assert_lt a0, BIG_LOG_SIZE/8, ASSERT_TOO_MANY_NOPS
+    lui t1, 0xC000
+    li s3, %lo(BIG_LOG)
+1:
+    sw t1,   0(s3)
+    sw zero, 4(s3)
+    addi s3, 8
+    addiu a0, -1
+    bnez a0, 1b
+    nop
+    j RDPQ_Send
+    li s4, %lo(BIG_LOG)
+
+
 command_big:
-    addi s1, rspq_dmem_buf_ptr, -128
+    addi s1, rspq_dmem_buf_ptr, -TEST_RSPQ_BIG_PAYLOAD_SIZE
     move s2, zero
 command_big_loop:
     lw t0, %lo(RSPQ_DMEM_BUFFER)(s1)
@@ -128,4 +159,6 @@ command_big_out:
     move s0, a1
     li s4, %lo(TEST_BIG)
     j DMAOut
-    li t0, DMA_SIZE(128, 1)
+    li t0, DMA_SIZE(TEST_RSPQ_BIG_PAYLOAD_SIZE, 1)
+
+#include <rsp_rdpq.inc>

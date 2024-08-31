@@ -14,6 +14,8 @@
 #define RSPQ_MAX_OVERLAY_COUNT         8
 #define RSPQ_OVERLAY_ID_COUNT          16
 #define RSPQ_MAX_OVERLAY_COMMAND_COUNT ((RSPQ_MAX_OVERLAY_COUNT - 1) * 16)
+#define RSPQ_DESCRIPTOR_SIZE_MASK      0xFC
+#define RSPQ_DESCRIPTOR_MAX_SIZE       RSPQ_DESCRIPTOR_SIZE_MASK
 
 /** Minimum / maximum size of a block's chunk (contiguous memory buffer) */
 #define RSPQ_BLOCK_MIN_SIZE            64
@@ -23,6 +25,11 @@
 #define RSPQ_MAX_BLOCK_NESTING_LEVEL   8
 #define RSPQ_LOWPRI_CALL_SLOT          (RSPQ_MAX_BLOCK_NESTING_LEVEL+0)  ///< Special slot used to store the current lowpri pointer
 #define RSPQ_HIGHPRI_CALL_SLOT         (RSPQ_MAX_BLOCK_NESTING_LEVEL+1)  ///< Special slot used to store the current highpri pointer
+
+/** Signal used by RDP SYNC_FULL command to notify that an interrupt is pending */
+#define SP_STATUS_SIG_RDPSYNCFULL              SP_STATUS_SIG1
+#define SP_WSTATUS_SET_SIG_RDPSYNCFULL         SP_WSTATUS_SET_SIG1
+#define SP_WSTATUS_CLEAR_SIG_RDPSYNCFULL       SP_WSTATUS_CLEAR_SIG1
 
 /** Signal used by RSP to notify that a syncpoint was reached */
 #define SP_STATUS_SIG_SYNCPOINT                SP_STATUS_SIG2

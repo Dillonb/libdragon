@@ -26,6 +26,7 @@
 
 /* Easy include wrapper */
 #include "n64types.h"
+#include "fmath.h"
 #include "audio.h"
 #include "console.h"
 #include "debug.h"
@@ -41,6 +42,7 @@
 #include "eeprom.h"
 #include "eepromfs.h"
 #include "graphics.h"
+#include "mi.h"
 #include "interrupt.h"
 #include "n64sys.h"
 #include "backtrace.h"
@@ -55,7 +57,17 @@
 #include "xm64.h"
 #include "ym64.h"
 #include "rspq.h"
+#include "rdpq.h"
+#include "rdpq_tri.h"
+#include "rdpq_rect.h"
+#include "rdpq_attach.h"
+#include "rdpq_mode.h"
+#include "rdpq_tex.h"
+#include "rdpq_sprite.h"
+#include "rdpq_debug.h"
+#include "rdpq_macros.h"
 #include "surface.h"
+#include "sprite.h"
 #include "debugcpp.h"
 
 #endif

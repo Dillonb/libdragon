@@ -12,45 +12,7 @@
 #include "system.h"
 #include "dfsinternal.h"
 #include "rompak_internal.h"
-
-/**
- * @defgroup dfs DragonFS
- * @ingroup asset
- * @brief DragonFS filesystem implementation and newlib hooks.
- *
- * DragonFS is a read only ROM filesystem for the N64.  It provides an interface
- * that homebrew developers can use to load resources from cartridge space that
- * were not available at compile time.  This can mean sprites or other game assets,
- * or the filesystem can be appended at a later time if the homebrew developer wishes
- * end users to be able to insert custom levels, music or other assets.  It is loosely
- * based off of FAT with consideration into application and limitations of the N64.
- *
- * The filesystem can be generated using 'mkdfs' which is included in the 'tools'
- * directory of libdragon.  Due to the read-only nature, DFS does not support empty
- * files or empty directories.  Attempting to create a filesystem with either of
- * these using 'mkdfs' will result in an error.  If a filesystem contains either empty
- * files or empty directories, the result of manipulating the filesystem is undefined.
- *
- * DragonFS does not support writing, renaming or symlinking of files.  It supports only
- * file and directory types.
- *
- * DFS files have a maximum size of 256 MiB.  Directories can have an unlimited
- * number of files in them.  Each token (separated by a / in the path) can be 243 characters
- * maximum.  Directories can be 100 levels deep at maximum.  There can be 4 files open
- * simultaneously.
- *
- * When DFS is initialized, it will register itself with newlib using 'rom:/' as a prefix.
- * Files can be accessed either with standard POSIX functions (open, fopen) using the 'rom:/'
- * prefix or the lower-level DFS API calls without prefix. In most cases, it is not necessary
- * to use the DFS API directly, given that the standard C functions are more comprehensive.
- * Files can be opened using both sets of API calls simultaneously as long as no more than
- * four files are open at any one time.
- * 
- * DragonFS does not support file compression; if you want to compress your assets,
- * use the asset API (#asset_load / #asset_fopen).
- * 
- * @{
- */
+#include "utils.h"
 
 /**
  * @brief Directory walking flags 
@@ -78,14 +40,16 @@ enum
 
 /** @brief Base filesystem pointer */
 static uint32_t base_ptr = 0;
-/** @brief Open file tracking */
-static open_file_t open_files[MAX_OPEN_FILES];
 /** @brief Directory pointer stack */
 static uint32_t directories[MAX_DIRECTORY_DEPTH];
 /** @brief Depth into directory pointer stack */
 static uint32_t directory_top = 0;
 /** @brief Pointer to next directory entry set when doing a directory walk */
 static directory_entry_t *next_entry = 0;
+/** @brief Convert an open file pointer to a handle */
+#define OPENFILE_TO_HANDLE(file)        ((int)PhysicalAddr(file))
+/** @brief Convert a handle to an open file pointer */
+#define HANDLE_TO_OPENFILE(handle)      ((dfs_open_file_t*)((uint32_t)(handle) | 0x80000000))
 
 /**
  * @brief Read a sector from cartspace
@@ -104,51 +68,6 @@ static inline void grab_sector(void *cart_loc, void *ram_loc)
     data_cache_hit_writeback_invalidate(ram_loc, SECTOR_SIZE);
 
     dma_read((void *)(((uint32_t)ram_loc) & 0x1FFFFFFF), (uint32_t)cart_loc, SECTOR_SIZE);
-}
-
-/**
- * @brief Find a free open file structure
- *
- * @return A pointer to an open file structure or NULL if no more open file structures.
- */
-static open_file_t *find_free_file()
-{
-    for(int i = 0; i < MAX_OPEN_FILES; i++)
-    {
-        if(!open_files[i].handle)
-        {
-            /* Found one! */
-            return &open_files[i];
-        }
-    }
-
-    /* No free files */
-    return 0;
-}
-
-/**
- * @brief Find an open file structure based on a handle
- *
- * @param[in] x
- *            The file handle given to the open file
- *
- * @return A pointer to an open file structure or NULL if no file matches the handle
- */
-static open_file_t *find_open_file(uint32_t x)
-{
-    if(x == 0) { return 0; }
-
-    for(int i = 0; i < MAX_OPEN_FILES; i++)
-    {
-        if(open_files[i].handle == x)
-        {
-            /* Found it! */
-            return &open_files[i];
-        }
-    }
-
-    /* Couldn't find handle */
-    return 0;
 }
 
 /**
@@ -643,8 +562,6 @@ static int __dfs_init(uint32_t base_fs_loc)
         base_ptr = base_fs_loc;
         clear_directory();
 
-        memset(open_files, 0, sizeof(open_files));
-
         /* Good FS */
         return DFS_ESUCCESS;
     }
@@ -653,16 +570,6 @@ static int __dfs_init(uint32_t base_fs_loc)
     return DFS_EBADFS;
 }
 
-/**
- * @brief Change directories to the specified path.  
- *
- * Supports absolute and relative 
- *
- * @param[in] path
- *            Relative or absolute path to change directories to
- * 
- * @return DFS_ESUCCESS on success or a negative value on error.
- */
 int dfs_chdir(const char * const path)
 {
     /* Reset directory listing */
@@ -677,19 +584,6 @@ int dfs_chdir(const char * const path)
     return recurse_path(path, WALK_CHDIR, 0, TYPE_ANY);
 }
 
-/**
- * @brief Find the first file or directory in a directory listing.
- *
- * Supports absolute and relative.  If the path is invalid, returns a negative DFS_errno.  If
- * a file or directory is found, returns the flags of the entry and copies the name into buf.
- *
- * @param[in]  path
- *             The path to look for files in
- * @param[out] buf
- *             Buffer to place the name of the file or directory found
- *
- * @return The flags (#FLAGS_FILE, #FLAGS_DIR, #FLAGS_EOF) or a negative value on error.
- */
 int dfs_dir_findfirst(const char * const path, char *buf)
 {
     directory_entry_t *dirent;
@@ -719,16 +613,6 @@ int dfs_dir_findfirst(const char * const path, char *buf)
     return get_flags(&t_node);
 }
 
-/**
- * @brief Find the next file or directory in a directory listing. 
- *
- * @note Should be called after doing a #dfs_dir_findfirst.
- *
- * @param[out] buf
- *             Buffer to place the name of the next file or directory found
- *
- * @return The flags (#FLAGS_FILE, #FLAGS_DIR, #FLAGS_EOF) or a negative value on error.
- */
 int dfs_dir_findnext(char *buf)
 {
     if(!next_entry)
@@ -766,17 +650,6 @@ int dfs_dir_findnext(char *buf)
  */
 int dfs_open(const char * const path)
 {
-    /* Ensure we always open with a unique handle */
-    static uint32_t next_handle = 1;
-
-    /* Try to find a free slot */
-    open_file_t *file = find_free_file();
-
-    if(!file)
-    {
-        return DFS_ENFILE;        
-    }
-
     /* Try to find file */
     directory_entry_t *dirent;
     int ret = recurse_path(path, WALK_OPEN, &dirent, TYPE_FILE);
@@ -787,18 +660,24 @@ int dfs_open(const char * const path)
         return ret;
     }
 
+    /* Try to find a free slot */
+    dfs_open_file_t *file = malloc(sizeof(dfs_open_file_t));
+
+    if(!file)
+    {
+        return DFS_ENOMEM;
+    }
+
     /* We now have the pointer to the file entry */
     directory_entry_t t_node;
     grab_sector(dirent, &t_node);
 
     /* Set up file handle */
-    file->handle = next_handle++;
     file->size = get_size(&t_node);
     file->loc = 0;
     file->cart_start_loc = get_start_location(&t_node);
-    file->cached_loc = 0xFFFFFFFF;
 
-    return file->handle;
+    return OPENFILE_TO_HANDLE(file);
 }
 
 /**
@@ -811,15 +690,15 @@ int dfs_open(const char * const path)
  */
 int dfs_close(uint32_t handle)
 {
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
         return DFS_EBADHANDLE;
     }
 
-    /* Closing the handle is easy as zeroing out the file */
-    memset(file, 0, sizeof(open_file_t));
+    /* Free the open file */
+    free(file);
 
     return DFS_ESUCCESS;
 }
@@ -838,7 +717,7 @@ int dfs_close(uint32_t handle)
  */
 int dfs_seek(uint32_t handle, int offset, int origin)
 {
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
@@ -912,7 +791,7 @@ int dfs_seek(uint32_t handle, int offset, int origin)
 int dfs_tell(uint32_t handle)
 {
     /* The good thing is that the location is always in the file structure */
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
@@ -924,7 +803,11 @@ int dfs_tell(uint32_t handle)
 
 /**
  * @brief Read data from a file
- *
+ * 
+ * Note that no caching is performed: if you need to read small amounts
+ * (eg: one byte at a time), consider using standard C API instead (fopen())
+ * which performs internal buffering to avoid too much overhead.
+ * 
  * @param[out] buf
  *             Buffer to read into
  * @param[in]  size
@@ -939,7 +822,7 @@ int dfs_tell(uint32_t handle)
 int dfs_read(void * const buf, int size, int count, uint32_t handle)
 {
     /* This is where we do all the work */
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
@@ -953,7 +836,6 @@ int dfs_read(void * const buf, int size, int count, uint32_t handle)
     }
 
     int to_read = size * count;
-    int did_read = 0;
 
     /* Bounds check to make sure we don't read past the end */
     if(file->loc + to_read > file->size)
@@ -966,72 +848,57 @@ int dfs_read(void * const buf, int size, int count, uint32_t handle)
         return 0;
 
     /* Fast-path. If possibly, we want to DMA directly into the destination
-     * buffer, without using any intermediate buffers. The rules are convoluted
-     * because we try to squeeze maximum performance here and thus we rely also
-     * on undocumented behaviors of PI DMA.
-     * The rules we follow are:
-     *
-     *   * The RDRAM destination pointer must be 8-bytes aligned.
-     *   * The ROM location must be 2-bytes aligned.
-     *   * The length must be either less than 0x7F (all values accepted),
-     *     or even.
+     * buffer, without using any intermediate buffers. We can do that only if
+     * the buffer and the ROM location have the same 2-byte phase.
      */
-    bool rom_aligned = (file->loc & 1) == 0;
-    bool ram_aligned = ((uint32_t)buf & 7) == 0;
-    bool len_aligned = (to_read < 0x7F) || ((to_read & 1) == 0);
-    if (rom_aligned && ram_aligned && len_aligned)
+    if (LIKELY(!(((uint32_t)buf ^ (uint32_t)file->loc) & 1)))
     {
-        /* 16-byte alignment: we can simply invalidate the buffer.
-         * 8-byte alignment: we need to also writeback in case the partial
-         *  cachelines have hot data to write back. */
+        /* Calculate ROM address. NOTE: do this before invalidation,
+         * in case the file object is false-sharing the buffer. */
+        uint32_t rom_address = file->cart_start_loc + file->loc;
+
+        /* 16-byte alignment: we can simply invalidate the buffer. */
         if ((((uint32_t)buf | to_read) & 15) == 0)
             data_cache_hit_invalidate(buf, to_read);
         else
             data_cache_hit_writeback_invalidate(buf, to_read);
 
-        dma_read((void *)(((uint32_t)buf) & 0x1FFFFFFF),
-            file->cart_start_loc + file->loc, to_read);
+        dma_read(buf, rom_address, to_read);
 
         file->loc += to_read;
         return to_read;
     }
 
-    /* Something we can actually increment! */
+    /* It was not possible to perform a direct DMA read into the destination
+     * buffer. Use an intermediate buffer on the stack to perform the read. */
     uint8_t *data = buf;
-    const int CACHED_SIZE = sizeof(file->cached_data);
+    const int CHUNK_SIZE = 512;
 
-    /* Loop in, reading data in the cached buffer */
+    /* Allocate the buffer, aligned to 16 bytes */
+    uint8_t chunk_base[CHUNK_SIZE+16] __attribute__((aligned(16)));
+    data_cache_hit_invalidate(chunk_base, CHUNK_SIZE+16);
+
+    /* Get a pointer to it with the same 2-byte phase of the file current location.
+     * This guarantees that we can actually DMA into it directly. */
+    uint8_t *chunk = UncachedAddr(chunk_base);
+    if (file->loc & 1)
+        chunk++;
+
     while(to_read)
     {
-        /* Check if we need to read into the cached buffer */
-        if (file->loc < file->cached_loc || file->loc >= file->cached_loc+CACHED_SIZE)
-        {
-            /* We need to read from a 8-byte aligned location, so calculate it */
-            file->cached_loc = file->loc & ~7;
+        int n = MIN(to_read, CHUNK_SIZE);
 
-            /* Invalidate the cached data. No need to writeback here because
-               CACHE_SIZE is a multiple of 16 bytes and the data is aligned,
-               so the cachelines are not shared with other variables. */
-            data_cache_hit_invalidate(file->cached_data, CACHED_SIZE);
+        /* Read the data from ROM into the stack buffer, and then and
+         * copy it to the destination buffer. */
+        dma_read(chunk, file->cart_start_loc + file->loc, n);
+        memcpy(data, chunk, n);
 
-            dma_read((void *)(((uint32_t)file->cached_data) & 0x1FFFFFFF),
-                file->cart_start_loc + file->cached_loc, CACHED_SIZE);
-        }
-
-        /* Pull as much data as we can from the current buffer */
-        int copy = file->cached_loc+CACHED_SIZE - file->loc;
-        if (copy > to_read)
-            copy = to_read;
-
-        memcpy(data, file->cached_data + (file->loc - file->cached_loc), copy);
-
-        file->loc += copy;
-        data += copy;
-        to_read -= copy;
-        did_read += copy;
+        file->loc += n;
+        data += n;
+        to_read -= n;
     }
 
-    return did_read;
+    return (void*)data - buf;
 }
 
 /**
@@ -1044,7 +911,7 @@ int dfs_read(void * const buf, int size, int count, uint32_t handle)
  */
 int dfs_size(uint32_t handle)
 {
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
@@ -1103,7 +970,7 @@ uint32_t dfs_rom_addr(const char *path)
  */
 int dfs_eof(uint32_t handle)
 {
-    open_file_t *file = find_open_file(handle);
+    dfs_open_file_t *file = HANDLE_TO_OPENFILE(handle);
 
     if(!file)
     {
@@ -1243,8 +1110,6 @@ static int __close( void *file )
  */
 static int __findfirst( char *path, dir_t *dir )
 {
-    if( !path || !dir ) { return -1; }
-
     /* Grab first entry, return if bad */
     int flags = dfs_dir_findfirst( path, dir->d_name );
     if( flags < 0 ) { return -1; }
@@ -1277,8 +1142,6 @@ static int __findfirst( char *path, dir_t *dir )
  */
 static int __findnext( dir_t *dir )
 {
-    if( !dir ) { return -1; }
-
     /* Grab first entry, return if bad */
     int flags = dfs_dir_findnext( dir->d_name );
     if( flags < 0 ) { return -1; }
@@ -1308,15 +1171,13 @@ static int __findnext( dir_t *dir )
  * to allow posix access to DragonFS filesystem.
  */
 static filesystem_t dragon_fs = {
-    __open,
-    __fstat,
-    __lseek,
-    __read,
-    0,
-    __close,
-    0,
-    __findfirst,
-    __findnext
+    .open = __open,
+    .fstat = __fstat,
+    .lseek = __lseek,
+    .read = __read,
+    .close = __close,
+    .findfirst = __findfirst,
+    .findnext = __findnext,
 };
 
 /**
@@ -1344,30 +1205,6 @@ static void __dfs_check_emulation(void)
     assertf(0, "Your emulator is not accurate enough to run this ROM.\nSpecifically, it doesn't support accurate PI DMA");
 }
 
-/**
- * @brief Initialize the filesystem.
- *
- * Given a base offset where the filesystem should be found, this function will
- * initialize the filesystem to read from cartridge space.  This function will
- * also register DragonFS with newlib so that standard POSIX/C file operations
- * work with DragonFS, using the "rom:/" prefix".
- * 
- * The function needs to know where the DFS image is located within the cartridge
- * space. To simplify this, you can pass #DFS_DEFAULT_LOCATION which tells
- * #dfs_init to search for the DFS image by itself, using the rompak TOC (see
- * rompak_internal.h). Most users should use this option.
- * 
- * Otherwise, if the ROM cannot be built with a rompak TOC for some reason,
- * a virtual address should be passed. This is normally 0xB0000000 + the offset
- * used when building your ROM + the size of the header file used (typically 0x1000). 
- *
- * @param[in] base_fs_loc
- *            Virtual address in cartridge space at which to find the filesystem, or
- *            DFS_DEFAULT_LOCATION to automatically search for the filesystem in the
- *            cartridge (using the rompak).
- *
- * @return DFS_ESUCCESS on success or a negative error otherwise.
- */
 int dfs_init(uint32_t base_fs_loc)
 {
     /* Detect if we are running on emulator accurate enough to emulate DragonFS. */
@@ -1418,5 +1255,3 @@ const char *dfs_strerror(int error)
     default:             return "Unknown error";
     }
 }
-
-/** @} */

@@ -10,43 +10,11 @@
 #include "regsinternal.h"
 #include "utils.h"
 
-/**
- * @defgroup timer Timer Subsystem
- * @ingroup libdragon
- * @brief Interface to the timer module in the MIPS r4300 processor.
- *
- * The timer subsystem allows code to receive a callback after a specified
- * number of ticks or microseconds.  It interfaces with the MIPS
- * coprocessor 0 to handle the timer interrupt and provide useful timing
- * services.
- *
- * Before attempting to use the timer subsystem, code should call #timer_init.
- * After the timer subsystem has been initialized, a new one-shot or
- * continuous timer can be created with #new_timer.  To remove an expired
- * one-shot timer or a recurring timer, use #delete_timer.  To temporarily
- * stop a timer, use #stop_timer.  To restart a stopped timer or an expired
- * one-shot timer, use #start_timer.  Once code no longer needs the timer
- * subsystem, a call to #timer_close will free all continuous timers and shut
- * down the timer subsystem.  Note that timers removed with #stop_timer or
- * expired one-short timers will not be removed automatically and are the
- * responsibility of the calling code to be freed, regardless of a call to
- * #timer_close.
- *
- * Because the MIPS internal counter wraps around after ~90 seconds (see
- * TICKS_READ), it's not possible to schedule a timer more than 90 seconds
- * in the future.
- *
- * @{
- */
+/** @brief Refcount of #timer_init vs #timer_close calls. */
+static int timer_init_refcount = 0;
 
 /** @brief Internal linked list of timers */
-static timer_link_t *TI_timers = 0;
-
-/** @brief Higher-part of 64-bit tick counter */
-volatile uint32_t ticks64_high;
-
-/** @brief Time at which interrupts were disabled */
-extern volatile uint32_t interrupt_disabled_tick;
+static timer_link_t *TI_timers = NULL;
 
 /** @brief Timer callback expects a context parameter */
 #define TF_CONTEXT     0x20
@@ -201,76 +169,23 @@ static void timer_poll(void)
 	timer_update_compare(TI_timers, TICKS_READ());
 }
 
-/**
- * @brief Timer callback overflow function
- *
- * This function is the callback of the internal overflow timer, which
- * is configured by timer_init() and is used to create a 64-bit timer
- * accessed by timer_ticks().
- */
-static void timer_overflow_callback(int ovfl)
-{
-	ticks64_high++;
-}
-
-/**
- * @brief Initialize the timer subsystem
- *
- * This function will reset the COP0 ticks counter to 0. Even if you
- * later access the hardware counter directly (via TICKS_READ()), it should not
- * be a problem if you call timer_init() early in the application main.
- *
- * Do not modify the COP0 ticks counter after calling this function. Doing so
- * will impede functionality of the timer module.
- */
 void timer_init(void)
 {
-	assertf(!TI_timers, "timer module already initialized");
-	/* Create first timer for overflows: expires when counter is 0 and
-	 * has a period of 2**32. */
-	timer_link_t *timer = malloc(sizeof(timer_link_t));
-	if (timer)
-	{
-		timer->left = 0;
-		timer->set = 0;
-		timer->flags = TF_CONTINUOUS | TF_OVERFLOW;
-		timer->callback = timer_overflow_callback;
-		timer->ctx = NULL;
-		timer->next = NULL;
+	// Just increment the refcount if already initialized.
+	if (timer_init_refcount++ > 0) { return; }
 
-		TI_timers = timer;
-	}
-
-	/* Reset the count and compare registers. Avoid to accidentally trigger
-	   an interrupt by setting count to 1 and compare to 0. Also enable
-	   timer interrupts in COP0. */
+	// Reset the compare register and enable timer interrupts in COP0.
+	// Do not write the COUNT register to avoid interfering with get_ticks().
 	disable_interrupts();
-	ticks64_high = 0;
-	C0_WRITE_COUNT(1);
 	C0_WRITE_COMPARE(0);
 	set_TI_interrupt(1);
 	register_TI_handler(timer_poll);
 	enable_interrupts();
 }
 
-/**
- * @brief Create a new timer and add to list
- * 
- * If you need to associate some data with the timer, consider using
- * #new_timer_context to include a pointer in the callback.
- *
- * @param[in] ticks
- *            Number of ticks before the timer should fire
- * @param[in] flags
- *            Timer flags.  See #TF_ONE_SHOT, #TF_CONTINUOUS and #TF_DISABLED
- * @param[in] callback
- *            Callback function to call when the timer expires
- *
- * @return A pointer to the timer structure created
- */
 timer_link_t *new_timer(int ticks, int flags, timer_callback1_t callback)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	timer_link_t *timer = malloc(sizeof(timer_link_t));
 	if (timer)
 	{
@@ -296,25 +211,9 @@ timer_link_t *new_timer(int ticks, int flags, timer_callback1_t callback)
 	return timer;
 }
 
-/**
- * @brief Create a new timer with context and add to list
- * 
- * If you don't need the context, consider using #new_timer instead.
- *
- * @param[in] ticks
- *            Number of ticks before the timer should fire
- * @param[in] flags
- *            Timer flags.  See #TF_ONE_SHOT, #TF_CONTINUOUS and #TF_DISABLED
- * @param[in] callback
- *            Callback function to call when the timer expires
- * @param[in] ctx
- * 			  Opaque pointer to pass as an argument to callback
- *
- * @return A pointer to the timer structure created
- */
 timer_link_t *new_timer_context(int ticks, int flags, timer_callback2_t callback, void *ctx)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	timer_link_t *timer = malloc(sizeof(timer_link_t));
 	if (timer)
 	{
@@ -340,24 +239,9 @@ timer_link_t *new_timer_context(int ticks, int flags, timer_callback2_t callback
 	return timer;
 }
 
-/**
- * @brief Start a timer (not currently in the list)
- * 
- * If you need to associate some data with the timer, consider using
- * #start_timer_context to include a pointer in the callback.
- *
- * @param[in] timer
- *            Pointer to timer structure to reinsert and start
- * @param[in] ticks
- *            Number of ticks before the timer should fire
- * @param[in] flags
- *            Timer flags.  See #TF_ONE_SHOT, #TF_CONTINUOUS, and #TF_DISABLED
- * @param[in] callback
- *            Callback function to call when the timer expires
- */
 void start_timer(timer_link_t *timer, int ticks, int flags, timer_callback1_t callback)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	if (timer)
 	{
 		disable_interrupts();
@@ -381,25 +265,9 @@ void start_timer(timer_link_t *timer, int ticks, int flags, timer_callback1_t ca
 	}
 }
 
-/**
- * @brief Start a timer (not currently in the list) with context
- * 
- * If you don't need the context, consider using #start_timer instead.
- *
- * @param[in] timer
- *            Pointer to timer structure to reinsert and start
- * @param[in] ticks
- *            Number of ticks before the timer should fire
- * @param[in] flags
- *            Timer flags.  See #TF_ONE_SHOT, #TF_CONTINUOUS, and #TF_DISABLED
- * @param[in] callback
- *            Callback function to call when the timer expires
- * @param[in] ctx
- *            Opaque pointer to pass as an argument to callback
- */
 void start_timer_context(timer_link_t *timer, int ticks, int flags, timer_callback2_t callback, void *ctx)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	if (timer)
 	{
 		disable_interrupts();
@@ -423,12 +291,6 @@ void start_timer_context(timer_link_t *timer, int ticks, int flags, timer_callba
 	}
 }
 
-/**
- * @brief Reset a timer and add to list
- *
- * @param[in] timer
- *            Pointer to timer structure to reinsert and start
- */
 void restart_timer(timer_link_t *timer)
 {
 	if (timer)
@@ -448,24 +310,12 @@ void restart_timer(timer_link_t *timer)
 	}
 }
 
-/**
- * @brief Stop a timer and remove it from the list
- *
- * @note This function does not free a timer structure, use #delete_timer
- *       to do this.
- * 
- * @note It is safe to call this function from a timer callback, including
- *       to stop a timer from its own callback.
- *
- * @param[in] timer
- *            Timer structure to stop and remove
- */
 void stop_timer(timer_link_t *timer)
 {
 	timer_link_t *head;
 	timer_link_t *last = 0;
 
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	if (timer)
 	{
 		disable_interrupts();
@@ -492,17 +342,9 @@ void stop_timer(timer_link_t *timer)
 	}
 }
 
-/**
- * @brief Remove a timer from the list and delete it
- *
- * @note It is not safe to call this function from a timer callback.
-
- * @param[in] timer
- *            Timer structure to stop, remove and free
- */
 void delete_timer(timer_link_t *timer)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
 	if (timer)
 	{
 		stop_timer(timer);
@@ -510,16 +352,13 @@ void delete_timer(timer_link_t *timer)
 	}
 }
 
-/**
- * @brief Free and close the timer subsystem
- *
- * This function will ensure all recurring timers are deleted from the list 
- * before closing.  One-shot timers that have expired will need to be
- * manually deleted with #delete_timer.
- */
 void timer_close(void)
 {
-	assertf(TI_timers, "timer module not initialized");
+	assertf(timer_init_refcount > 0, "timer module not initialized");
+
+	// Do nothing if there are still dangling references.
+	if (--timer_init_refcount > 0) { return; }
+
 	disable_interrupts();
 	
 	/* Disable generation of timer interrupt. */
@@ -548,48 +387,8 @@ void timer_close(void)
 	enable_interrupts();
 }
 
-/**
- * @brief Return total ticks since timer was initialized, as a 64-bit counter.
- *
- * @return Then number of ticks since the timer was initialized
- *
- */
 long long timer_ticks(void)
 {
-	uint32_t low, high;
-	assertf(TI_timers, "timer module not initialized");
-
-	/* Check whether interrupts are enabled or not. We need a different strategy
-	 * to account for race conditions. */
-	if (C0_STATUS() & C0_STATUS_IE) {
-		/* Read the hardware counter twice, and fetch the high part counter
-		 * in between. In the unlikely case that the counter overflows exactly
-		 * during the sequence, it means that there's a race condition and
-		 * we can't really know whether high and low are coherent -- but in
-		 * that case, we just repeat the sequence again to avoid the ambiguity. */
-		uint32_t pre;
-		do {
-			pre = TICKS_READ();
-			MEMORY_BARRIER();
-			high = ticks64_high;
-			MEMORY_BARRIER();
-			low = TICKS_READ();
-		} while ((int32_t)pre < 0 && (int32_t)low >= 0);
-
-	} else {
-		/* Interrupts are currently disabled. If they've been disabled for more
-		 * than 2**32 ticks, it's game over because we can't know how many times
-		 * the counter has overflown.
-		 * So assuming they were disabled for not too long, check whether there
-		 * was a counter overflow between now and when they were disabled. 
-		 * If there was, increment high. */
-		low = TICKS_READ();
-		high = ticks64_high;
-		if (interrupt_disabled_tick > low)
-			high++;
-	}
-
-	return ((uint64_t)high << 32) + low;
+	assertf(timer_init_refcount > 0, "timer module not initialized");
+	return get_ticks();
 }
-
-/** @} */

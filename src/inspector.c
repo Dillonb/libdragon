@@ -8,6 +8,7 @@
 #include "backtrace_internal.h"
 #include "cop0.h"
 #include "n64sys.h"
+#include "display.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -71,7 +72,7 @@ static void mips_disasm(uint32_t *ptr, char *out, int n) {
 		"s", "r", "jj", "jjal", "bbeq", "bbne", "bblez", "bbgtz",
 		"iaddi", "iaddiu", "rslt", "isltiu", "iandi", "iori", "ixori", "klui",
 		"ccop0", "fcop1", "ccop2", "ccop3", "bbeql", "bbnel", "bblezl", "bbgtzl",
-		"ddaddi", "ddaddiu", "dldl", "dldr", "*", "*", "*", "*",
+		"idaddi", "idaddiu", "mldl", "mldr", "*", "*", "*", "*",
 		"mlb", "mlh", "mlwl", "mlw", "mlbu", "mlhu", "mlwr", "mlwu",
 		"msb", "msh", "mswl", "msw", "msdl", "msdr", "mswr", "*",
 		"mll", "nlwc1", "mlwc2", "*", "mlld", "nldc1", "mldc2", "mld",
@@ -80,12 +81,12 @@ static void mips_disasm(uint32_t *ptr, char *out, int n) {
 	static const char *special[64]= {
 		"esll", "*", "esrl", "esra", "rsllv", "*", "rsrlv", "rsrav",
 		"wjr", "wjalr", "*", "*", "asyscall", "abreak", "*", "_sync",
-		"wmfhi", "wmflo", "wmthi", "wmtlo", "rdsslv", "*", "rdsrlv", "rdsrav",
-		"*", "*", "*", "*", "*", "*", "*", "*", 
+		"cmfhi", "cmthi", "cmflo", "cmtlo", "rdsslv", "*", "rdsrlv", "rdsrav",
+		"hmult", "hmultu", "hdiv", "hdivu", "hdmult", "hdmultu", "hddiv", "hddivu", 
 		"radd", "raddu", "rsub", "rsubu", "rand", "ror", "rxor", "rnor", 
 		"*", "*", "*", "*", "*", "*", "*", "*", 
-		"*", "*", "*", "*", "*", "*", "*", "*", 
-		"*", "*", "*", "*", "*", "*", "*", "*", 
+		"ttge", "ttgeu", "ttlt", "ttltu", "tteq", "*", "ttne", "*", 
+		"edsll", "*", "edsrl", "edsra", "edsll32", "*", "edsrl32", "edsra32", 
 	};
 	static const char *fpu_ops[64]= {
         "radd", "rsub", "rmul", "rdiv", "rsqrt", "sabs", "smov", "sneg",
@@ -130,9 +131,9 @@ static void mips_disasm(uint32_t *ptr, char *out, int n) {
                 case 1: opn = "ybc1t"; break;
                 case 3: opn = "ybc1tl"; break;
             } break;
-            case 16: case 17:
+            case 16: case 17: case 20: case 21:
                 opn = fpu_ops[(op >> 0) & 0x3F];
-                sprintf(symbuf, "%s.%s", opn, (sub == 16) ? "s" : "d");
+                sprintf(symbuf, "%s.%s", opn, (sub == 16) ? "s" : (sub == 17) ? "d" : (sub == 20) ? "w" : "l");
                 opn = symbuf;
                 rt = __mips_fpreg[(op >> 11) & 0x1F];
                 rs = __mips_fpreg[(op >> 16) & 0x1F];
@@ -151,12 +152,14 @@ static void mips_disasm(uint32_t *ptr, char *out, int n) {
 	/* op rd, rt, sa  */  case 'e': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s, %ld", pc, opn+1, rd, rt, (op >> 6) & 0x1F); break;
 	/* op rs, rt, tgt16 */case 'b': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s, %08lx <%s>", pc, opn+1, rs, rt, tgt16, __symbolize((void*)tgt16, symbuf, sizeof(symbuf))); break;
 	/* op tgt16 */        case 'y': snprintf(out, n, "%08lx: \aG%-9s \aY%08lx <%s>", pc, opn+1, tgt16, __symbolize((void*)tgt16, symbuf, sizeof(symbuf))); break;
-	/* op rt */           case 'w': snprintf(out, n, "%08lx: \aG%-9s \aY%s", pc, opn+1, rs); break;
+	/* op rs */           case 'w': snprintf(out, n, "%08lx: \aG%-9s \aY%s", pc, opn+1, rs); break;
+	/* op rd */           case 'c': snprintf(out, n, "%08lx: \aG%-9s \aY%s", pc, opn+1, rd); break;
 	/* op */			  case 'z': snprintf(out, n, "%08lx: \aG%-9s", pc, opn+1); break;
     /* op fd, fs, ft */   case 'f': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s, %s", pc, opn+1, rd, rs, rt); break;
     /* op rt, fs */       case 'g': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s", pc, opn+1, rt, __mips_fpreg[(op >> 11) & 0x1F]); break;
-	/* op rt, rs */       case 'h': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s", pc, opn+1, rt, rs); break;
+	/* op rs, rt */       case 'h': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s", pc, opn+1, rs, rt); break;
 	/* op code20 */ 	  case 'a': snprintf(out, n, "%08lx: \aG%-9s \aY0x%lx", pc, opn+1, (op>>6) & 0xFFFFF); break;
+    /* op rs, rt, code */ case 't': snprintf(out, n, "%08lx: \aG%-9s \aY%s, %s, 0x%lx", pc, opn+1, rs, rt, (op>>6) & 0x3FF); break;
 					      default:  snprintf(out, n, "%08lx: \aG%-9s", pc, opn+1); break;
 	}
 }
@@ -455,7 +458,7 @@ static void inspector(exception_t* ex, enum Mode mode) {
                 page--;
             }
         }
-		while (!(disp = display_lock())) {}
+        disp = display_get();
 
         cursor_x = XSTART;
         cursor_y = YSTART;

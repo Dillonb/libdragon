@@ -46,24 +46,18 @@ typedef struct AI_regs_s {
      * Use the following formula to calculate the value: ((2 * clockrate / frequency) + 1) / 2 - 1
      */
     uint32_t dacrate;
-    /** @brief The size of a single sample in bits. */
-    uint32_t samplesize;
+    /** @brief Half-rate at which each single bit of a sample is shifted into the DAC.
+     * 
+     * Allowed values are 0..15, with "0" turning off the audio output. Values
+     * 1 and 2 are a valid hardware configuration for the DAC, but result in
+     * audio corruption because AI isn't able to shift bits that fast.
+     * 
+     * The maximum value that still allows samples to play correctly is dacrate / 66
+     * (consider this is a half-rate and there are 2 16-bit samples). Lower values
+     * will work too, though.
+     */
+    uint32_t bitrate;
 } AI_regs_t;
-
-/**
- * @brief Register definition for the MI interface
- * @ingroup lowlevel
- */
-typedef struct MI_regs_s {
-    /** @brief Mode register */
-    uint32_t mode;
-    /** @brief Version register */
-    uint32_t version;
-    /** @brief Current interrupts on the system */
-    uint32_t intr;
-    /** @brief Interrupt mask */
-    uint32_t mask;
-} MI_regs_t;
 
 /**
  * @brief Register definition for the VI interface

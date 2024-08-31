@@ -6,40 +6,13 @@
 #include <stdint.h>
 #include <malloc.h>
 #include <string.h>
+#include <stdio.h>
 #include "display.h"
 #include "graphics.h"
+#include "sprite.h"
 #include "font.h"
 #include "surface.h"
-
-/**
- * @defgroup graphics 2D Graphics
- * @ingroup display
- * @brief Software routines for manipulating graphics in a display context.
- *
- * The graphics subsystem is responsible for software manipulation of a display
- * context as returned from the @ref display.  All of the functions use a pure
- * software drawing method and are thus much slower than hardware sprite support.
- * However, they are slightly more flexible and offer no hardware limitations
- * in terms of sprite size.
- *
- * Code wishing to draw to the screen should first acquire a display context
- * using #display_lock.  Once the display context is acquired, code may draw to
- * the context using any of the graphics functions present.  Wherever practical,
- * two versions of graphics functions are available: a transparent variety and
- * a non-transparent variety.  Code that wishes to display sprites without
- * transparency can get a slight performance boost by using the non-transparent
- * variety of calls since no software alpha blending needs to occur.  Once
- * code has finished drawing to the display context, it can be displayed to the
- * screen using #display_show.
- *
- * The graphics subsystem makes use of the same contexts as the @ref rdp.  Thus,
- * with careful coding, both hardware and software routines can be used to draw
- * to the display context with no ill effects.  The colors returned by 
- * #graphics_make_color and #graphics_convert_color are also compatible with both
- * hardware and software graphics routines.
- *
- * @{
- */
+#include "sprite_internal.h"
 
 /**
  * @brief Struct that holds the current loaded font. We load the default font on
@@ -110,26 +83,6 @@ static uint32_t f_color = 0xFFFFFFFF;
  */
 static uint32_t b_color = 0x00000000;
 
-/**
- * @brief Return a packed 32-bit representation of an RGBA color
- *
- * This is exactly the same as calling `graphics_convert_color(RGBA32(r,g,b,a))`.
- * Refer to #graphics_convert_color for more information.
- *
- * @param[in] r
- *            8-bit red value
- * @param[in] g
- *            8-bit green value
- * @param[in] b
- *            8-bit blue value
- * @param[in] a
- *            8-bit alpha value.  Note that 255 is opaque and 0 is transparent
- *
- * @return a 32-bit representation of the color suitable for blitting in software or hardware
- * 
- * @see #graphics_convert_color
- * 
- */
 uint32_t graphics_make_color( int r, int g, int b, int a )
 {
     color_t color;
@@ -142,24 +95,6 @@ uint32_t graphics_make_color( int r, int g, int b, int a )
     return graphics_convert_color( color );
 }
 
-/**
- * @brief Convert a color structure to a 32-bit representation of an RGBA color
- * 
- * This function is similar to #color_to_packed16 and #color_to_packed32, but
- * automatically picks the version matching with the current display configuration.
- * Notice that this might be wrong if you are drawing to an arbitrary surface rather
- * than a framebuffer.
- *
- * @note In 16 bpp mode, this function will return a packed 16-bit color
- * in BOTH the lower 16 bits and the upper 16 bits. In general, this is not necessary.
- * However, for drawing with the old deprecated RDP API (in particular,
- * rdp_set_primitive_color), this is still required.
- * 
- * @param[in] color
- *            A color structure representing an RGBA color
- * 
- * @return a 32-bit representation of the color suitable for blitting in software or hardware
- */
 uint32_t graphics_convert_color( color_t color )
 {
     if( display_get_bitdepth() == 2 )
@@ -174,18 +109,6 @@ uint32_t graphics_convert_color( color_t color )
     }
 }
 
-/**
- * @brief Set the current forecolor and backcolor for text operations
- *
- * @param[in] forecolor
- *            32-bit RGBA color to use as the text color.  Use #graphics_convert_color 
- *            or #graphics_make_color to generate this value.
- * @param[in] backcolor
- *             32-bit RGBA color to use as the background color for text.  Use 
- *             #graphics_convert_color or #graphics_make_color to generate this value.
- *             Note that if the color given is transparent, text can be written over
- *             other graphics without background colors showing.
- */
 void graphics_set_color( uint32_t forecolor, uint32_t backcolor )
 {
     f_color = forecolor;
@@ -219,22 +142,6 @@ static int __is_transparent( int bitdepth, uint32_t color )
     return 0;
 }
 
-/**
- * @brief Draw a pixel to a given display context
- *
- * @note This function does not support transparency for speed purposes.  To draw
- * a transparent or translucent pixel, use #graphics_draw_pixel_trans.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The x coordinate of the pixel.
- * @param[in] y
- *            The y coordinate of the pixel.
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_pixel( surface_t* disp, int x, int y, uint32_t color )
 {
     if( disp == 0 ) { return; }
@@ -250,22 +157,6 @@ void graphics_draw_pixel( surface_t* disp, int x, int y, uint32_t color )
     }
 }
 
-/**
- * @brief Draw a pixel to a given display context with alpha support
- *
- * @note This function is much slower than #graphics_draw_pixel for 32-bit
- * pixels due to the need to sample the current pixel to do software alpha-blending.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The x coordinate of the pixel.
- * @param[in] y
- *            The y coordinate of the pixel.
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_pixel_trans( surface_t* disp, int x, int y, uint32_t color )
 {
     if( disp == 0 ) { return; }
@@ -313,26 +204,6 @@ void graphics_draw_pixel_trans( surface_t* disp, int x, int y, uint32_t color )
     }
 }
 
-/**
- * @brief Draw a line to a given display context
- * 
- * @note This function does not support transparency for speed purposes.  To draw
- * a transparent or translucent line, use #graphics_draw_line_trans.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x0
- *            The x coordinate of the start of the line.
- * @param[in] y0
- *            The y coordinate of the start of the line. 
- * @param[in] x1
- *            The x coordinate of the end of the line.
- * @param[in] y1
- *            The y coordinate of the end of the line. 
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_line( surface_t* disp, int x0, int y0, int x1, int y1, uint32_t color )
 {
 	int dy = y1 - y0;
@@ -391,26 +262,6 @@ void graphics_draw_line( surface_t* disp, int x0, int y0, int x1, int y1, uint32
 	}
 }
 
-/**
- * @brief Draw a line to a given display context with alpha support
- *
- * @note This function is much slower than #graphics_draw_line for 32-bit
- * buffers due to the need to sample the current pixel to do software alpha-blending.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x0
- *            The x coordinate of the start of the line.
- * @param[in] y0
- *            The y coordinate of the start of the line. 
- * @param[in] x1
- *            The x coordinate of the end of the line.
- * @param[in] y1
- *            The y coordinate of the end of the line. 
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_line_trans( surface_t* disp, int x0, int y0, int x1, int y1, uint32_t color )
 {
 	int dy = y1 - y0;
@@ -469,26 +320,6 @@ void graphics_draw_line_trans( surface_t* disp, int x0, int y0, int x1, int y1, 
 	}
 }
 
-/**
- * @brief Draw a filled rectangle to a display context
- *
- * @note This function does not support transparency for speed purposes.  To draw
- * a transparent or translucent box, use #graphics_draw_box_trans.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The x coordinate of the top left of the box.
- * @param[in] y
- *            The y coordinate of the top left of the box.
- * @param[in] width
- *            The width of the box in pixels.
- * @param[in] height
- *            The height of the box in pixels.
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_box( surface_t* disp, int x, int y, int width, int height, uint32_t color )
 {
     if( disp == 0 ) { return; }
@@ -520,26 +351,6 @@ void graphics_draw_box( surface_t* disp, int x, int y, int width, int height, ui
     }
 }
 
-/**
- * @brief Draw a filled rectangle to a display context
- *
- * @note This function is much slower than #graphics_draw_box for 32-bit
- * buffers due to the need to sample the current pixel to do software alpha-blending.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The x coordinate of the top left of the box.
- * @param[in] y
- *            The y coordinate of the top left of the box.
- * @param[in] width
- *            The width of the box in pixels.
- * @param[in] height
- *            The height of the box in pixels.
- * @param[in] color
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_draw_box_trans( surface_t* disp, int x, int y, int width, int height, uint32_t color )
 {
     if( disp == 0 ) { return; }
@@ -603,18 +414,6 @@ void graphics_draw_box_trans( surface_t* disp, int x, int y, int width, int heig
     }
 }
 
-/**
- * @brief Fill the entire screen with a particular color
- *
- * @note Since this function is designed for blanking the screen, alpha values for
- * colors are ignored.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] c
- *            The 32-bit RGBA color to draw to the screen.  Use #graphics_convert_color
- *            or #graphics_make_color to generate this value.
- */
 void graphics_fill_screen( surface_t* disp, uint32_t c )
 {
     if( disp == 0 ) { return; }
@@ -627,30 +426,12 @@ void graphics_fill_screen( surface_t* disp, uint32_t c )
         buffer[i] = c64;
 }
 
-/**
- * @brief Set the font to the default.
- */
 void graphics_set_default_font( void )
 {
     sprite_t *font = (sprite_t *)(display_get_bitdepth() == 2 ? __font_data_16 : __font_data_32);
     graphics_set_font_sprite( font );
 }
 
-/**
- * @brief Set the current font. Should be set before using any of the draw function.
- * 
- * The sprite font should be imported using hslices/vslices according to the amount of characters it has.
- * The amount of hslices vs vslices does not matter for this, but it should include the whole ASCII
- * range that you will want to use, including characters from the 0 to 32 range. Normally the sprite should have
- * 127 slices to cover the normal ASCII range.
- * 
- * During rendering, the slice used will be the same number as the char (eg.: character 'A' will use slice 65).
- * 
- * You can see an example of a sprite font (that has the default font double sized) under examples/customfont.
- *
- * @param[in] font
- *        Sprite font to be used.
- */
 void graphics_set_font_sprite( sprite_t *font )
 {
     sprite_font.sprite = font;
@@ -658,23 +439,6 @@ void graphics_set_font_sprite( sprite_t *font )
     sprite_font.font_height = sprite_font.sprite->height / sprite_font.sprite->vslices;
 }
 
-/**
- * @brief Draw a character to the screen using the built-in font
- *
- * Draw a character from the built-in font to the screen.  This function does not support alpha blending, 
- * only binary transparency.  If the background color is fully transparent, the font is drawn with no
- * background.  Otherwise, the font is drawn on a fully colored background.  The foreground and background
- * can be set using #graphics_set_color.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the character drawn.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the character drawn.
- * @param[in] ch
- *            The ASCII character to draw to the screen.
- */
 void graphics_draw_character( surface_t* disp, int x, int y, char ch )
 {
     if( disp == 0 ) { return; }
@@ -683,7 +447,7 @@ void graphics_draw_character( surface_t* disp, int x, int y, char ch )
     int depth = display_get_bitdepth();
 
     // setting default font if none was set previously
-    if( sprite_font.sprite == NULL || depth != sprite_font.sprite->bitdepth )
+    if( sprite_font.sprite == NULL || depth*8 != TEX_FORMAT_BITDEPTH(sprite_get_format(sprite_font.sprite)) )
     {
         graphics_set_default_font();
     }
@@ -753,26 +517,6 @@ void graphics_draw_character( surface_t* disp, int x, int y, char ch )
     }
 }
 
-/**
- * @brief Draw a null terminated string to a display context
- *
- * Draw a string to the screen, following a few simple rules.  Standard ASCII is supported, as well
- * as \\r, \\n, space and tab.  \\r and \\n will both cause the next character to be rendered one line
- * lower and at the x coordinate specified in the parameters.  The tab character inserts five spaces.
- *
- * This function does not support alpha blending, only binary transparency.  If the background color is 
- * fully transparent, the font is drawn with no background.  Otherwise, the font is drawn on a fully 
- * colored background.  The foreground and background can be set using #graphics_set_color.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the character drawn.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the character drawn.
- * @param[in] msg
- *            The ASCII null terminated string to draw to the screen.
- */
 void graphics_draw_text( surface_t* disp, int x, int y, const char * const msg )
 {
     if( disp == 0 ) { return; }
@@ -807,73 +551,18 @@ void graphics_draw_text( surface_t* disp, int x, int y, const char * const msg )
     }
 }
 
-/**
- * @brief Draw a sprite to a display context
- *
- * Given a sprite structure, this function will draw a sprite to the display context
- * with clipping support.
- *
- * @note This function does not support alpha blending for speed purposes.  For
- * alpha blending support, please see #graphics_draw_sprite_trans
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped horizontally.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped vertically.
- * @param[in] sprite
- *            Pointer to a sprite structure to display to the screen.
- */
 void graphics_draw_sprite( surface_t* disp, int x, int y, sprite_t *sprite )
 {
     /* Simply a wrapper to call the original functionality */
     graphics_draw_sprite_stride( disp, x, y, sprite, -1 );
 }
 
-/**
- * @brief Draw a sprite from a spritemap to a display context
- *
- * Given a sprite structure, this function will draw a sprite out of a larger spritemap
- * to the display context with clipping support.  This function is useful for software
- * tilemapping.  If a sprite was generated as a spritemap (it has more than one horizontal 
- * or vertical slice), this function can display a slice of the sprite as a standalone sprite.
- * 
- * Given a sprite with 3 horizontal slices and 2 vertical slices, the offsets would be as follows:
- *
- * <pre>
- * *---*---*---*
- * | 0 | 1 | 2 |
- * *---*---*---*
- * | 3 | 4 | 5 |
- * *---*---*---*
- * </pre>
- *
- * @note This function does not support alpha blending for speed purposes.  For
- * alpha blending support, please see #graphics_draw_sprite_trans_stride
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped horizontally.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped vertically.
- * @param[in] sprite
- *            Pointer to a sprite structure to display to the screen.
- * @param[in] offset
- *            Offset of the sprite to display out of the spritemap.  The offset is counted
- *            starting from 0.  The top left sprite in the map is 0, the next one to the right 
- *            is 1, and so on.
- */
 void graphics_draw_sprite_stride( surface_t* disp, int x, int y, sprite_t *sprite, int offset )
 {
     /* Sanity checking */
     if( disp == 0 ) { return; }
     if( sprite == 0 ) { return; }
+    __sprite_upgrade(sprite);
 
     /* For spritemaps */
     int tx = x;
@@ -945,7 +634,7 @@ void graphics_draw_sprite_stride( surface_t* disp, int x, int y, sprite_t *sprit
     int depth = TEX_FORMAT_BITDEPTH(surface_get_format( disp ));
 
     /* Only display sprite if it matches the bitdepth */
-    if( depth == 16 && sprite->bitdepth == 2 )
+    if( depth == 16 && TEX_FORMAT_BITDEPTH(sprite_get_format(sprite)) == 16 )
     {
         uint16_t *buffer = (uint16_t *)__get_buffer( disp );
         uint16_t *sp_data = (uint16_t *)sprite->data;
@@ -960,7 +649,7 @@ void graphics_draw_sprite_stride( surface_t* disp, int x, int y, sprite_t *sprit
             }
         }
     }
-    else if( depth == 32 && sprite->bitdepth == 4 )
+    else if( depth == 32 && TEX_FORMAT_BITDEPTH(sprite_get_format(sprite)) == 32 )
     {
         uint32_t *buffer = (uint32_t *)__get_buffer( disp );
         uint32_t *sp_data = (uint32_t *)sprite->data;
@@ -977,75 +666,19 @@ void graphics_draw_sprite_stride( surface_t* disp, int x, int y, sprite_t *sprit
     }
 }
 
-/**
- * @brief Draw a sprite to a display context with alpha transparency
- *
- * Given a sprite structure, this function will draw a sprite to the display context
- * with clipping support.
- *
- * @note This function supports alpha blending and is much slower for 32-bit sprites. 
- * If you do not need alpha blending support, please see #graphics_draw_sprite.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped horizontally.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped vertically.
- * @param[in] sprite
- *            Pointer to a sprite structure to display to the screen.
- */
 void graphics_draw_sprite_trans( surface_t* disp, int x, int y, sprite_t *sprite )
 {
     /* Simply a wrapper to call the original functionality */
     graphics_draw_sprite_trans_stride( disp, x, y, sprite, -1 );
 }
 
-/**
- * @brief Draw a sprite from a spritemap to a display context
- *
- * Given a sprite structure, this function will draw a sprite out of a larger spritemap
- * to the display context with clipping support.  This function is useful for software
- * tilemapping.  If a sprite was generated as a spritemap (it has more than one horizontal 
- * or vertical slice), this function can display a slice of the sprite as a standalone sprite.
- *
- * Given a sprite with 3 horizontal slices and 2 vertical slices, the offsets would be as follows:
- *
- * <pre>
- * *---*---*---*
- * | 0 | 1 | 2 |
- * *---*---*---*
- * | 3 | 4 | 5 |
- * *---*---*---*
- * </pre>
- *
- * @note This function supports alpha blending and is much slower for 32-bit sprites. 
- * If you do not need alpha blending support, please see #graphics_draw_sprite_stride.
- *
- * @param[in] disp
- *            The currently active display context.
- * @param[in] x
- *            The X coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped horizontally.
- * @param[in] y
- *            The Y coordinate to place the top left pixel of the sprite.  This can
- *            be negative if the sprite is clipped vertically.
- * @param[in] sprite
- *            Pointer to a sprite structure to display to the screen.
- * @param[in] offset
- *            Offset of the sprite to display out of the spritemap.  The offset is counted
- *            starting from 0.  The top left sprite in the map is 0, the next one to the right 
- *            is 1, and so on.
- */
-
 void graphics_draw_sprite_trans_stride( surface_t* disp, int x, int y, sprite_t *sprite, int offset )
 {
     /* Sanity checking */
     if( disp == 0 ) { return; }
     if( sprite == 0 ) { return; }
-    
+    __sprite_upgrade(sprite);
+
     /* For spritemaps */
     int tx = x;
     int ty = y;
@@ -1116,7 +749,7 @@ void graphics_draw_sprite_trans_stride( surface_t* disp, int x, int y, sprite_t 
     int depth = TEX_FORMAT_BITDEPTH(surface_get_format( disp ));
 
     /* Only display sprite if it matches the bitdepth */
-    if( depth == 16 && sprite->bitdepth == 2 )
+    if( depth == 16 && TEX_FORMAT_BITDEPTH(sprite_get_format(sprite)) == 16 )
     {
         uint16_t *buffer = (uint16_t *)__get_buffer( disp );
         uint16_t *sp_data = (uint16_t *)sprite->data;
@@ -1135,7 +768,7 @@ void graphics_draw_sprite_trans_stride( surface_t* disp, int x, int y, sprite_t 
             }
         }
     }
-    else if( depth == 32 && sprite->bitdepth == 4 )
+    else if( depth == 32 && TEX_FORMAT_BITDEPTH(sprite_get_format(sprite)) == 32 )
     {
         uint32_t *buffer = (uint32_t *)__get_buffer( disp );
         uint32_t *sp_data = (uint32_t *)sprite->data;
@@ -1185,5 +818,3 @@ extern inline uint16_t color_to_packed16(color_t c);
 extern inline uint32_t color_to_packed32(color_t c);
 extern inline color_t color_from_packed16(uint16_t c);
 extern inline color_t color_from_packed32(uint32_t c);
-
-/** @} */ /* graphics */

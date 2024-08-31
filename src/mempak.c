@@ -1,34 +1,11 @@
 /**
  * @file mempak.c
- * @brief Mempak Filesystem Routine
- * @ingroup mempak
+ * @brief Controller Pak Filesystem Routine
+ * @ingroup controllerpak
  */
 #include <string.h>
 #include "libdragon.h"
 #include "regsinternal.h"
-
-/**
- * @defgroup mempak Mempak Filesystem Routines
- * @ingroup controller
- * @brief Managed mempak interface.
- *
- * The mempak system is a subsystem of the @ref controller.  Before attempting to
- * read from or write to a mempak, be sure you have initialized the controller system
- * with #controller_init and verified that you have a mempak in the correct controller
- * using #identify_accessory.
- *
- * To read and write to the mempak in an organized way compatible with official software,
- * first check that the mempak is valid using #validate_mempak.  If the mempack is
- * invalid, it will need to be formatted using #format_mempak.  Once the mempak is
- * considered valid, existing notes can be enumerated using #get_mempak_entry.  To
- * read the data associated with a note, use #read_mempak_entry_data.  To write a
- * new note to the mempak, use #write_mempak_entry_data.  Note that there is no append
- * functionality so if a note is being updated, ensure you have deleted the old note
- * first using #delete_mempak_entry.  Code should be careful to check how many blocks
- * are free before writing using #get_mempak_free_space.
- *
- * @{
- */
 
 /**
  * @name Inode values
@@ -45,29 +22,12 @@
 #define BLOCK_VALID_LAST    0x7F
 /** @} */
 
-/**
- * @brief Read a sector from a mempak
- *
- * This will read a sector from a mempak.  Sectors on mempaks are always 256 bytes
- * in size.
- *
- * @param[in]  controller
- *             The controller (0-3) to read a sector from
- * @param[in]  sector
- *             The sector (0-127) to read from
- * @param[out] sector_data
- *             Buffer to place 256 read bytes of data
- *
- * @retval 0 if reading was successful
- * @retval -1 if the sector was out of bounds or sector_data was null
- * @retval -2 if there was an error reading part of a sector
- */
 int read_mempak_sector( int controller, int sector, uint8_t *sector_data )
 {
     if( sector < 0 || sector >= 128 ) { return -1; }
     if( sector_data == 0 ) { return -1; }
 
-    /* Sectors are 256 bytes, a mempak reads 32 bytes at a time */
+    /* Sectors are 256 bytes, a Controller Pak reads 32 bytes at a time */
     for( int i = 0; i < 8; i++ )
     {
         if( read_mempak_address( controller, (sector * MEMPAK_BLOCK_SIZE) + (i * 32), sector_data + (i * 32) ) )
@@ -80,29 +40,12 @@ int read_mempak_sector( int controller, int sector, uint8_t *sector_data )
     return 0;
 }
 
-/**
- * @brief Write a sector to a mempak
- *
- * This will write a sector to a mempak.  Sectors on mempaks are always 256 bytes
- * in size.
- *
- * @param[in]  controller
- *             The controller (0-3) to write a sector to
- * @param[in]  sector
- *             The sector (0-127) to write to
- * @param[out] sector_data
- *             Buffer containing 256 bytes of data to write to sector
- *
- * @retval 0 if writing was successful
- * @retval -1 if the sector was out of bounds or sector_data was null
- * @retval -2 if there was an error writing part of a sector
- */
 int write_mempak_sector( int controller, int sector, uint8_t *sector_data )
 {
     if( sector < 0 || sector >= 128 ) { return -1; }
     if( sector_data == 0 ) { return -1; }
 
-    /* Sectors are 256 bytes, a mempak writes 32 bytes at a time */
+    /* Sectors are 256 bytes, a Controller Pak writes 32 bytes at a time */
     for( int i = 0; i < 8; i++ )
     {
         if( write_mempak_address( controller, (sector * MEMPAK_BLOCK_SIZE) + (i * 32), sector_data + (i * 32) ) )
@@ -136,10 +79,10 @@ static uint16_t __get_header_checksum( uint16_t *block )
 }
 
 /**
- * @brief Check a mempak header for validity
+ * @brief Check a Controller Pak header for validity
  *
  * @param[in] sector
- *            A sector containing a mempak header
+ *            A sector containing a Controller Pak header
  *
  * @retval 0 if the header is valid
  * @retval -1 if the header is invalid
@@ -195,7 +138,7 @@ static uint8_t __get_toc_checksum( uint8_t *sector )
 }
 
 /**
- * @brief Check a mempak TOC sector for validity
+ * @brief Check a Controller Pak TOC sector for validity
  *
  * @param[in] sector
  *            A sector containing a TOC
@@ -219,10 +162,10 @@ static int __validate_toc( uint8_t *sector )
 }
 
 /**
- * @brief Convert a N64 mempak character to ASCII
+ * @brief Convert a Controller Pak character to ASCII
  *
  * @param[in] c
- *            A character read from a mempak entry title
+ *            A character read from a Controller Pak entry title
  *
  * @return ASCII equivalent of character read
  */
@@ -282,15 +225,15 @@ static char __n64_to_ascii( char c )
 }
 
 /**
- * @brief Convert an ASCII character to a N64 mempak character
+ * @brief Convert an ASCII character to a Controller Pak character
  *
- * If the character passed in is one that the N64 mempak doesn't support, this
+ * If the character passed in is one that the Controller Pak doesn't support, this
  * function will default to a space.
  *
  * @param[in] c
  *            An ASCII character
  *
- * @return A N64 mempak character equivalent to the ASCII character passed in
+ * @return A Controller Pak character equivalent to the ASCII character passed in
  */
 static char __ascii_to_n64( char c )
 {
@@ -348,10 +291,10 @@ static char __ascii_to_n64( char c )
 }
 
 /**
- * @brief Check a region read from a mempak entry for validity
+ * @brief Check a region read from a Controller Pak entry for validity
  *
  * @param[in] region
- *            A region read from a mempak entry
+ *            A region read from a Controller Pak entry
  *
  * @retval 0 if the region is valid
  * @retval -1 if the region is invalid
@@ -384,11 +327,11 @@ static int __validate_region( uint8_t region )
 /**
  * @brief Parse a note structure from a TOC
  *
- * Given a note block read from a mempak TOC, parse and return a structure
+ * Given a note block read from a Controller Pak TOC, parse and return a structure
  * representing the data.
  *
  * @param[in]  tnote
- *             32 bytes read from a mempak TOC
+ *             32 bytes read from a Controller Pak TOC
  * @param[out] note
  *             Parsed note structure
  *
@@ -453,14 +396,14 @@ static int __read_note( uint8_t *tnote, entry_structure_t *note )
 }
 
 /**
- * @brief Create a note structure for a mempak TOC
+ * @brief Create a note structure for a Controller Pak TOC
  *
- * Given a valid note structure, format it for writing to a mempak TOC
+ * Given a valid note structure, format it for writing to a Controller Pak TOC
  *
  * @param[in]  note
  *             Valid note structure to convert
  * @param[out] out_note
- *             32 bytes ready to be written to a mempak TOC
+ *             32 bytes ready to be written to a Controller Pak TOC
  *
  * @retval 0 if the note was converted properly
  * @retval -1 if the parameters were invalid
@@ -564,7 +507,7 @@ static int __get_num_pages( uint8_t *sector, int inode )
 }
 
 /**
- * @brief Get number of free blocks on a mempak
+ * @brief Get number of free blocks on a Controller Pak
  *
  * @param[in] sector
  *            A valid TOC block to examine
@@ -648,8 +591,8 @@ static int __get_note_block( uint8_t *sector, int inode, int block )
  * @param[in] controller
  *            The controller (0-3) to inspect for a valid TOC
  *
- * @retval -2 the mempak was not inserted or was bad
- * @retval -3 the mempak was unformatted or the header was invalid
+ * @retval -2 the Controller Pak was not inserted or was bad
+ * @retval -3 the Controller Pak was unformatted or the header was invalid
  * @retval 1 the first sector has a valid TOC
  * @retval 2 the second sector has a valid TOC
  */
@@ -705,19 +648,6 @@ static int __get_valid_toc( int controller )
     }
 }
 
-/**
- * @brief Return whether a mempak is valid
- *
- * This function will return whether the mempak in a particular controller
- * is formatted and valid.
- *
- * @param[in] controller
- *            The controller (0-3) to validate
- *
- * @retval 0 if the mempak is valid and ready to be used
- * @retval -2 if the mempak is not present or couldn't be read
- * @retval -3 if the mempak is bad or unformatted
- */
 int validate_mempak( int controller )
 {
     int toc = __get_valid_toc( controller );
@@ -734,23 +664,6 @@ int validate_mempak( int controller )
     }
 }
 
-/**
- * @brief Read an entry on a mempak
- *
- * Given an entry index (0-15), return the entry as found on the mempak.  If
- * the entry is blank or invalid, the valid flag is cleared.
- *
- * @param[in]  controller
- *             The controller (0-3) from which the entry should be read
- * @param[in]  entry
- *             The entry index (0-15) to read
- * @param[out] entry_data
- *             Structure containing information on the entry
- *
- * @retval 0 if the entry was read successfully
- * @retval -1 if the entry is out of bounds or entry_data is null
- * @retval -2 if the mempak is bad or not present
- */
 int get_mempak_entry( int controller, int entry, entry_structure_t *entry_data )
 {
     uint8_t data[MEMPAK_BLOCK_SIZE];
@@ -759,15 +672,15 @@ int get_mempak_entry( int controller, int entry, entry_structure_t *entry_data )
     if( entry < 0 || entry > 15 ) { return -1; }
     if( entry_data == 0 ) { return -1; }
 
-    /* Make sure mempak is valid */
+    /* Make sure Controller Pak is valid */
     if( (toc = __get_valid_toc( controller )) <= 0 )
     {
-        /* Bad mempak or was removed, return */
+        /* Bad Controller Pak or was removed, return */
         return -2;
     }
 
     /* Entries are spread across two sectors, but we can luckly grab just one
-       with a single mempak read */
+       with a single Controller Pak read */
     if( read_mempak_address( controller, (3 * MEMPAK_BLOCK_SIZE) + (entry * 32), data ) )
     {
         /* Couldn't read note database */
@@ -805,26 +718,15 @@ int get_mempak_entry( int controller, int entry, entry_structure_t *entry_data )
     }
 }
 
-/**
- * @brief Return the number of free blocks on a mempak
- *
- * Note that a block is identical in size to a sector.  To calculate the number of
- * bytes free, multiply the return of this function by #MEMPAK_BLOCK_SIZE.
- *
- * @param[in] controller
- *            The controller (0-3) to read the free space from
- *
- * @return The number of blocks free on the memory card or a negative number on failure
- */
 int get_mempak_free_space( int controller )
 {
     uint8_t data[MEMPAK_BLOCK_SIZE];
     int toc;
 
-    /* Make sure mempak is valid */
+    /* Make sure Controller Pak is valid */
     if( (toc = __get_valid_toc( controller )) <= 0 )
     {
-        /* Bad mempak or was removed, return */
+        /* Bad Controller Pak or was removed, return */
         return -2;
     }
 
@@ -838,18 +740,6 @@ int get_mempak_free_space( int controller )
     return __get_free_space( data );
 }
 
-/**
- * @brief Format a mempak
- *
- * Formats a mempak.  Should only be done to wipe a mempak or to initialize
- * the filesystem in case of a blank or corrupt mempak.
- *
- * @param[in] controller
- *            The controller (0-3) to format the mempak on
- *
- * @retval 0 if the mempak was formatted successfully
- * @retval -2 if the mempak was not present or couldn't be formatted
- */
 int format_mempak( int controller )
 {
     /* Many mempak dumps exist online for users of emulated games to get
@@ -924,28 +814,6 @@ int format_mempak( int controller )
     return 0;
 }
 
-/**
- * @brief Read the data associated with an entry on a mempak
- *
- * Given a valid mempak entry fetched by get_mempak_entry, retrieves the contents
- * of the entry.  The calling function must ensure that enough room is available in
- * the passed in buffer for the entire entry.  The entry structure itself contains
- * the number of blocks used to store the data which can be multiplied by
- * #MEMPAK_BLOCK_SIZE to calculate the size of the buffer needed.
- *
- * @param[in]  controller
- *             The controller (0-3) to read the entry data from
- * @param[in]  entry
- *             The entry structure associated with the data to be read.  An entry
- *             structure can be fetched based on index using #get_mempak_entry
- * @param[out] data
- *             The data associated with an entry
- *
- * @retval 0 if the entry was successfully read
- * @retval -1 if input parameters were out of bounds or the entry was corrupted somehow
- * @retval -2 if the mempak was not present or bad
- * @retval -3 if the data couldn't be read
- */
 int read_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *data )
 {
     int toc;
@@ -960,7 +828,7 @@ int read_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *d
     /* Grab the TOC sector so we can get to the individual blocks the data comprises of */
     if( (toc = __get_valid_toc( controller )) <= 0 )
     {
-        /* Bad mempak or was removed, return */
+        /* Bad Controller Pak or was removed, return */
         return -2;
     }
 
@@ -988,10 +856,10 @@ int read_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *d
 }
 
 /**
- * @brief Write associated data to a mempak entry
+ * @brief Write associated data to a Controller Pak entry
  *
- * Given a mempak entry structure with a valid region, name and block count, writes the
- * entry and associated data to the mempak.  This function will not overwrite any existing
+ * Given a Controller Pak entry structure with a valid region, name and block count, writes the
+ * entry and associated data to the Controller Pak.  This function will not overwrite any existing
  * user data.  To update an existing entry, use #delete_mempak_entry followed by
  * #write_mempak_entry_data with the same entry structure.
  *
@@ -1004,8 +872,8 @@ int read_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *d
  *
  * @retval 0 if the entry was created and written successfully
  * @retval -1 if the parameters were invalid or the note has no length
- * @retval -2 if the mempak wasn't present or was bad
- * @retval -3 if there was an error writing to the mempak
+ * @retval -2 if the Controller Pak wasn't present or was bad
+ * @retval -3 if there was an error writing to the Controller Pak
  * @retval -4 if there wasn't enough space to store the note
  * @retval -5 if there is no room in the TOC to add a new entry
  */
@@ -1024,7 +892,7 @@ int write_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *
     /* Grab valid TOC */
     if( (toc = __get_valid_toc( controller )) <= 0 )
     {
-        /* Bad mempak or was removed, return */
+        /* Bad Controller Pak or was removed, return */
         return -2;
     }
 
@@ -1139,7 +1007,7 @@ int write_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *
     /* Convert entry structure to proper entry data */
     __write_note( entry, tmp_data );
 
-    /* Store entry to empty slot on mempak */
+    /* Store entry to empty slot on Controller Pak */
     if( write_mempak_address( controller, (3 * MEMPAK_BLOCK_SIZE) + (entry->entry_id * 32), tmp_data ) )
     {
         /* Couldn't update note database */
@@ -1149,21 +1017,6 @@ int write_mempak_entry_data( int controller, entry_structure_t *entry, uint8_t *
     return 0;
 }
 
-/**
- * @brief Delete a mempak entry and associated data
- *
- * Given a valid mempak entry fetched by #get_mempak_entry, removes the entry and frees
- * all associated blocks.
- *
- * @param[in] controller
- *            The controller (0-3) to delete the note from
- * @param[in] entry
- *            The entry structure that is to be deleted from the mempak
- *
- * @retval 0 if the entry was deleted successfully
- * @retval -1 if the entry was invalid
- * @retval -2 if the mempak was bad or not present
- */
 int delete_mempak_entry( int controller, entry_structure_t *entry )
 {
     entry_structure_t tmp_entry;
@@ -1176,7 +1029,7 @@ int delete_mempak_entry( int controller, entry_structure_t *entry )
     if( entry->entry_id > 15 ) { return -1; }
     if( entry->inode < BLOCK_VALID_FIRST || entry->inode > BLOCK_VALID_LAST ) { return -1; }
 
-    /* Ensure that the entry passed in matches what's on the mempak */
+    /* Ensure that the entry passed in matches what's on the Controller Pak */
     if( read_mempak_address( controller, (3 * MEMPAK_BLOCK_SIZE) + (entry->entry_id * 32), data ) )
     {
         /* Couldn't read note database */
@@ -1270,5 +1123,3 @@ int delete_mempak_entry( int controller, entry_structure_t *entry )
 
     return 0;
 }
-
-/** @} */ /* controller */

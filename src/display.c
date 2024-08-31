@@ -15,10 +15,12 @@
 #include "utils.h"
 #include "debug.h"
 #include "surface.h"
+#include "rsp.h"
 
 /** @brief Maximum number of video backbuffers */
 #define NUM_BUFFERS         32
-
+/** @brief Number of past frames used to evaluate FPS */
+#define FPS_WINDOW          32
 
 static surface_t *surfaces;
 /** @brief Currently active bit depth */
@@ -37,6 +39,12 @@ static int now_showing = -1;
 static uint32_t drawing_mask = 0;
 /** @brief Bitmask of surfaces that are ready to be shown */
 static volatile uint32_t ready_mask = 0;
+/** @brief Window of absolute times at which previous frames were shown */
+static uint32_t frame_times[FPS_WINDOW];
+/** @brief Current index into the frame times window */
+static int frame_times_index = 0;
+/** @brief Current duration of the frame window (time elapsed for FPS_WINDOW frames) */
+static uint32_t frame_times_duration;
 
 /** @brief Get the next buffer index (with wraparound) */
 static inline int buffer_next(int idx) {
@@ -67,6 +75,17 @@ static void __display_callback()
     }
 
     vi_write_dram_register(__safe_buffer[now_showing] + (interlaced && !field ? __width * __bitdepth : 0));
+
+    // FIXME: PAL-M on old boards like NUS-CPU-02 requires changing V_BURST every field, otherwise
+    // the image seems garbled at the top. It is probably a bug in old revisions of the VI chip,
+    // since the problem doesn't exist on newer boards.
+    if (get_tv_type() == TV_MPAL && interlaced) {
+        if (field == 0) {
+            *VI_V_BURST = 0x000b0202;
+        } else {
+            *VI_V_BURST = 0x000e0204;
+        }
+    }
 }
 
 void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma_t gamma, filter_options_t filters )
@@ -78,7 +97,7 @@ void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma
     disable_interrupts();
 
     /* Minimum is two buffers. */
-    __buffers = MAX(2, MIN(NUM_BUFFERS, num_buffers));
+    __buffers = MAX(1, MIN(NUM_BUFFERS, num_buffers));
 
 
     if( res.interlaced )
@@ -86,9 +105,6 @@ void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma
         /* Serrate on to stop vertical jitter */
         control |= VI_CTRL_SERRATE;
     }
-
-    /* Copy over extra initializations */
-    vi_write_config(&vi_config_presets[res.interlaced][tv_type]);
 
     /* Figure out control register based on input given */
     switch( bit )
@@ -180,9 +196,6 @@ void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma
             break;
     }
 
-    /* Set the control register in our template */
-    vi_write_safe(VI_CTRL, control);
-
     /* Calculate width and scale registers */
     assertf(res.width > 0, "nonpositive width");
     assertf(res.height > 0, "nonpositive height");
@@ -196,9 +209,6 @@ void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma
     {
         assertf(res.width % 2 == 0, "width must be divisible by 2 for 32-bit depth");
     }
-    vi_write_safe(VI_WIDTH, res.width);
-    vi_write_safe(VI_X_SCALE, VI_X_SCALE_SET(res.width));
-    vi_write_safe(VI_Y_SCALE, VI_Y_SCALE_SET(res.height));
 
     /* Set up the display */
     __width = res.width;
@@ -230,7 +240,14 @@ void display_init( resolution_t res, bitdepth_t bit, uint32_t num_buffers, gamma
        to avoid confusing the VI chip with in-frame modifications. */
     if ( vi_is_active() ) { vi_wait_for_vblank(); }
 
+    /* Set basic preset */
+    vi_write_config(&vi_config_presets[res.interlaced][tv_type]);
+
     vi_write_safe(VI_ORIGIN, PhysicalAddr(__safe_buffer[0]));
+    vi_write_safe(VI_WIDTH, res.width);
+    vi_write_safe(VI_X_SCALE, VI_X_SCALE_SET(res.width));
+    vi_write_safe(VI_Y_SCALE, VI_Y_SCALE_SET(res.height));
+    vi_write_safe(VI_CTRL, control);
 
     enable_interrupts();
 
@@ -275,7 +292,7 @@ void display_close()
     enable_interrupts();
 }
 
-surface_t* display_lock(void)
+surface_t* display_try_get(void)
 {
     surface_t* retval = NULL;
     int next;
@@ -285,19 +302,39 @@ surface_t* display_lock(void)
 
     /* Calculate index of next display context to draw on. We need
        to find the first buffer which is not being drawn upon nor
-       being ready to be displayed. */
-    for (next = buffer_next(now_showing); next != now_showing; next = buffer_next(next)) {
+       being ready to be displayed.
+
+       Notice that the loop is always executed once, so it also works
+       in the case of a single display buffer, though it at least
+       wait for that buffer to be shown. */
+    next = buffer_next(now_showing);
+    do {
         if (((drawing_mask | ready_mask) & (1 << next)) == 0)  {
             retval = &surfaces[next];
             drawing_mask |= 1 << next;
             break;
         }
-    }
+        next = buffer_next(next);
+    } while (next != now_showing);
 
     enable_interrupts();
 
     /* Possibility of returning nothing, or a valid display context */
     return retval;
+}
+
+surface_t* display_get(void)
+{
+    // Wait until a buffer is available. We use a RSP_WAIT_LOOP as
+    // it is common for display to become ready again after RSP+RDP
+    // have finished processing the previous frame's commands.
+    surface_t* disp;
+    RSP_WAIT_LOOP(200) {
+         if ((disp = display_try_get())) {
+             break;
+         }
+    }
+    return disp;
 }
 
 void display_show( surface_t* surf )
@@ -322,6 +359,16 @@ void display_show( surface_t* surf )
     drawing_mask &= ~(1 << i);
     ready_mask |= 1 << i;
 
+    /* Record the time at which this frame was (asked to be) shown */
+    uint32_t old_ticks = frame_times[frame_times_index];
+    uint32_t now = TICKS_READ();
+    if (old_ticks)
+        frame_times_duration = TICKS_DISTANCE(old_ticks, now);
+    frame_times[frame_times_index] = now;
+    frame_times_index++;
+    if (frame_times_index == FPS_WINDOW)
+        frame_times_index = 0;
+
     enable_interrupts();
 }
 
@@ -335,7 +382,7 @@ void display_show( surface_t* surf )
  * internally.
  *
  * @param[in] disp
- *            A display context retrieved using #display_lock
+ *            A display context retrieved using #display_get
  */
 void display_show_force( display_context_t disp )
 {
@@ -346,22 +393,28 @@ void display_show_force( display_context_t disp )
     enable_interrupts();
 }
 
-uint32_t display_get_width()
+uint32_t display_get_width(void)
 {
     return __width;
 }
 
-uint32_t display_get_height()
+uint32_t display_get_height(void)
 {
     return __height;
 }
 
-uint32_t display_get_bitdepth()
+uint32_t display_get_bitdepth(void)
 {
     return __bitdepth;
 }
 
-uint32_t display_get_num_buffers()
+uint32_t display_get_num_buffers(void)
 {
     return __buffers;
+}
+
+float display_get_fps(void)
+{
+    if (!frame_times_duration) return 0;
+    return (float)FPS_WINDOW * TICKS_PER_SECOND / frame_times_duration;
 }

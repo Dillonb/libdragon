@@ -3,14 +3,21 @@
 
 #include <rspq.h>
 #include <rspq_constants.h>
+#include <rdp.h>
+#include <rdpq_constants.h>
+#include "test_rspq_constants.h"
 
 #define ASSERT_GP_BACKWARD           0xF001   // Also defined in rsp_test.S
+#define ASSERT_TOO_MANY_NOPS         0xF002
 
 static void test_assert_handler(rsp_snapshot_t *state, uint16_t assert_code)
 {
     switch (assert_code) {
         case ASSERT_GP_BACKWARD:
             printf("GP moved backward\n");
+            break;
+        case ASSERT_TOO_MANY_NOPS:
+            printf("Trying to send too many NOPs (%ld)\n", state->gpr[4]);
             break;
         default:
             printf("Unknown assert\n");
@@ -84,6 +91,16 @@ void rspq_test_high(uint32_t value)
 void rspq_test_reset_log(void)
 {
     rspq_write(test_ovl_id, 0x7);
+}
+
+void rspq_test_send_rdp(uint32_t value)
+{
+    rdpq_write(1, test_ovl_id, 0xA, 0, value);
+}
+
+void rspq_test_send_rdp_nops(int num_nops)
+{
+    rdpq_write(num_nops, test_ovl_id, 0xB, num_nops);
 }
 
 void rspq_test_big_out(void *dest)
@@ -187,15 +204,6 @@ void test_rspq_wrap(TestContext *ctx)
         rspq_noop();
     
     TEST_RSPQ_EPILOG(0, rspq_timeout);
-}
-
-void test_rspq_signal(TestContext *ctx)
-{
-    TEST_RSPQ_PROLOG();
-    
-    rspq_signal(SP_WSTATUS_SET_SIG0 | SP_WSTATUS_SET_SIG1);
-
-    TEST_RSPQ_EPILOG(SP_STATUS_SIG0 | SP_STATUS_SIG1, rspq_timeout);
 }
 
 void test_rspq_high_load(TestContext *ctx)
@@ -705,27 +713,27 @@ void test_rspq_big_command(TestContext *ctx)
     test_ovl_init();
     DEFER(test_ovl_close());
 
-    uint32_t values[32];
-    for (uint32_t i = 0; i < 32; i++)
+    uint32_t values[TEST_RSPQ_BIG_PAYLOAD_WORDS];
+    for (uint32_t i = 0; i < TEST_RSPQ_BIG_PAYLOAD_WORDS; i++)
     {
         values[i] = RANDN(0xFFFFFFFF);
     }
     
 
-    uint32_t output[32] __attribute__((aligned(16)));
-    data_cache_hit_writeback_invalidate(output, 128);
+    uint32_t output[TEST_RSPQ_BIG_PAYLOAD_WORDS] __attribute__((aligned(16)));
+    data_cache_hit_writeback_invalidate(output, TEST_RSPQ_BIG_PAYLOAD_SIZE);
 
-    rspq_write_t wptr = rspq_write_begin(test_ovl_id, 0x8, 33);
+    rspq_write_t wptr = rspq_write_begin(test_ovl_id, 0x8, TEST_RSPQ_BIG_COMMAND_SIZE);
     rspq_write_arg(&wptr, 0);
-    for (uint32_t i = 0; i < 32; i++)
+    for (uint32_t i = 0; i < TEST_RSPQ_BIG_PAYLOAD_WORDS; i++)
     {
         rspq_write_arg(&wptr, i | i << 8 | i << 16 | i << 24);
     }
     rspq_write_end(&wptr);
 
-    wptr = rspq_write_begin(test_ovl_id, 0x8, 33);
+    wptr = rspq_write_begin(test_ovl_id, 0x8, TEST_RSPQ_BIG_COMMAND_SIZE);
     rspq_write_arg(&wptr, 0);
-    for (uint32_t i = 0; i < 32; i++)
+    for (uint32_t i = 0; i < TEST_RSPQ_BIG_PAYLOAD_WORDS; i++)
     {
         rspq_write_arg(&wptr, values[i]);
     }
@@ -735,12 +743,75 @@ void test_rspq_big_command(TestContext *ctx)
 
     TEST_RSPQ_EPILOG(0, rspq_timeout);
 
-    uint32_t expected[32];
-    for (uint32_t i = 0; i < 32; i++)
+    uint32_t expected[TEST_RSPQ_BIG_PAYLOAD_WORDS];
+    for (uint32_t i = 0; i < TEST_RSPQ_BIG_PAYLOAD_WORDS; i++)
     {
         uint32_t x = i | i << 8 | i << 16 | i << 24;
         expected[i] = x ^ values[i];
     }
     
-    ASSERT_EQUAL_MEM((uint8_t*)output, (uint8_t*)expected, 128, "Output does not match!");
+    ASSERT_EQUAL_MEM((uint8_t*)output, (uint8_t*)expected, TEST_RSPQ_BIG_PAYLOAD_SIZE, "Output does not match!");
 }
+
+void test_rspq_rdp_dynamic(TestContext *ctx)
+{
+    TEST_RSPQ_PROLOG();
+    test_ovl_init();
+
+    const uint32_t count = 0x80;
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        rspq_test_send_rdp(i);
+    }
+
+    TEST_RSPQ_EPILOG(0, rspq_timeout);
+
+    extern void *rspq_rdp_dynamic_buffers[2];
+
+    ASSERT_EQUAL_HEX(*DP_START, PhysicalAddr(rspq_rdp_dynamic_buffers[0]), "DP_START does not match!");
+    ASSERT_EQUAL_HEX(*DP_END, PhysicalAddr(rspq_rdp_dynamic_buffers[0]) + count * 8, "DP_END does not match!");
+
+    uint64_t *rdp_buf = (uint64_t*)rspq_rdp_dynamic_buffers[0];
+
+    for (uint64_t i = 0; i < count; i++)
+    {
+        ASSERT_EQUAL_HEX(rdp_buf[i], i, "Wrong command at idx: %llx", i);
+    }
+}
+
+void test_rspq_rdp_dynamic_switch(TestContext *ctx)
+{
+    TEST_RSPQ_PROLOG();
+    test_ovl_init();
+
+    const uint32_t full_count = RDPQ_DYNAMIC_BUFFER_SIZE / 8;
+    const uint32_t extra_count = 8;
+    const uint32_t count = full_count + extra_count;
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        rspq_test_send_rdp(i);
+    }
+
+    TEST_RSPQ_EPILOG(0, rspq_timeout);
+
+    extern void *rspq_rdp_dynamic_buffers[2];
+
+    ASSERT_EQUAL_HEX(*DP_START, PhysicalAddr(rspq_rdp_dynamic_buffers[1]), "DP_START does not match!");
+    ASSERT_EQUAL_HEX(*DP_END, PhysicalAddr(rspq_rdp_dynamic_buffers[1]) + extra_count * 8, "DP_END does not match!");
+
+    uint64_t *rdp_buf0 = (uint64_t*)rspq_rdp_dynamic_buffers[0];
+    uint64_t *rdp_buf1 = (uint64_t*)rspq_rdp_dynamic_buffers[1];
+
+    for (uint64_t i = 0; i < full_count; i++)
+    {
+        ASSERT_EQUAL_HEX(rdp_buf0[i], i, "Wrong command at idx: %llx", i);
+    }
+
+    for (uint64_t i = 0; i < extra_count; i++)
+    {
+        ASSERT_EQUAL_HEX(rdp_buf1[i], i + full_count, "Wrong command at idx: %llx", i);
+    }
+}
+

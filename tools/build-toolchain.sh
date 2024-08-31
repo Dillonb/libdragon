@@ -35,12 +35,12 @@ JOBS="${JOBS:-1}" # If getconf returned nothing, default to 1
 GCC_CONFIGURE_ARGS=()
 
 # Dependency source libs (Versions)
-BINUTILS_V=2.41
-GCC_V=13.2.0
-NEWLIB_V=4.3.0.20230120
+BINUTILS_V=2.43.1
+GCC_V=14.2.0
+NEWLIB_V=4.4.0.20231231
 GMP_V=6.3.0 
 MPC_V=1.3.1 
-MPFR_V=4.2.0
+MPFR_V=4.2.1
 MAKE_V=${MAKE_V:-""}
 
 # Check if a command-line tool is available: status 0 means "yes"; status 1 means "no"
@@ -69,7 +69,7 @@ if [[ $OSTYPE == 'darwin'* ]]; then
 
     # Install required dependencies. gsed is really required, the others are optionals
     # and just speed up build.
-    brew install -q gmp mpfr libmpc gsed
+    brew install -q gmp mpfr libmpc gsed gcc isl libpng lz4 make mpc texinfo zlib
 
     # FIXME: we could avoid download/symlink GMP and friends for a cross-compiler
     # but we need to symlink them for the canadian compiler.
@@ -82,14 +82,17 @@ if [[ $OSTYPE == 'darwin'* ]]; then
         "--with-gmp=$(brew --prefix)"
         "--with-mpfr=$(brew --prefix)"
         "--with-mpc=$(brew --prefix)"
+        "--with-zlib=$(brew --prefix)"
     )
 
     # Install GNU sed as default sed in PATH. GCC compilation fails otherwise,
     # because it does not work with BSD sed.
     PATH="$(brew --prefix gsed)/libexec/gnubin:$PATH"
     export PATH
+else
+    # Configure GCC arguments for non-macOS platforms
+    GCC_CONFIGURE_ARGS+=("--with-system-zlib")
 fi
-
 # Create build path and enter it
 mkdir -p "$BUILD_PATH"
 cd "$BUILD_PATH"
@@ -211,8 +214,7 @@ pushd gcc_compile_target
     --disable-threads \
     --disable-win32-registry \
     --disable-nls \
-    --disable-werror \
-    --with-system-zlib
+    --disable-werror 
 make all-gcc -j "$JOBS"
 make install-gcc || sudo make install-gcc || su -c "make install-gcc"
 make all-target-libgcc -j "$JOBS"
@@ -222,7 +224,7 @@ popd
 # Compile newlib for target.
 mkdir -p newlib_compile_target
 pushd newlib_compile_target
-CFLAGS_FOR_TARGET="-DHAVE_ASSERT_FUNC -O2" ../"newlib-$NEWLIB_V"/configure \
+CFLAGS_FOR_TARGET="-DHAVE_ASSERT_FUNC -O2 -fpermissive" ../"newlib-$NEWLIB_V"/configure \
     --prefix="$CROSS_PREFIX" \
     --target="$N64_TARGET" \
     --with-cpu=mips64vr4300 \
@@ -288,7 +290,7 @@ else
     # Compile newlib for target.
     mkdir -p newlib_compile
     pushd newlib_compile
-    CFLAGS_FOR_TARGET="-DHAVE_ASSERT_FUNC -O2" ../"newlib-$NEWLIB_V"/configure \
+    CFLAGS_FOR_TARGET="-DHAVE_ASSERT_FUNC -O2 -fpermissive" ../"newlib-$NEWLIB_V"/configure \
         --prefix="$INSTALL_PATH" \
         --target="$N64_TARGET" \
         --with-cpu=mips64vr4300 \

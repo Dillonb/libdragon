@@ -5,6 +5,7 @@
  */
 
 #include "mixer.h"
+#include "mixer_internal.h"
 #include "regsinternal.h"
 #include "utils.h"
 #include "rsp.h"
@@ -164,19 +165,20 @@ static struct {
 	mixer_fx15_t lvol[MIXER_MAX_CHANNELS];
 	mixer_fx15_t rvol[MIXER_MAX_CHANNELS];
 
-	rsp_mixer_settings_t ucode_settings __attribute__((aligned(8)));
+	rsp_mixer_settings_t ucode_settings __attribute__((aligned(16)));
 
 } Mixer;
 
 /** @brief Count of ticks spent in mixer RSP, used for debugging purposes. */
 int64_t __mixer_profile_rsp = 0;
 
-static uint32_t __mixer_overlay_id;
+uint32_t __mixer_overlay_id;
 
 static inline int mixer_initialized(void) { return Mixer.num_channels != 0; }
 
 void mixer_init(int num_channels) {
 	memset(&Mixer, 0, sizeof(Mixer));
+	data_cache_hit_writeback_invalidate(&Mixer.ucode_settings, sizeof(Mixer.ucode_settings));
 
 	Mixer.num_channels = num_channels;
 	Mixer.sample_rate = audio_get_frequency();  // actual sample rate obtained via DAC clock
@@ -326,6 +328,11 @@ static void waveform_read(void *ctx, samplebuffer_t *sbuf, int wpos, int wlen, b
 		if (wpos >= wave->len)
 			wpos = waveform_wrap_wpos(wpos, wave->len, wave->loop_len);
 
+		// If we are requesting a read from 0, we force seeking because it
+		// means that previous read finished just exactly at the loop point.
+		if (wpos == 0)
+			seeking = true;
+
 		// The read might cross the end point of the waveform
 		// and continue at the loop point. We would need to handle
 		// this case by performing two reads with a seek inbetween.
@@ -421,7 +428,7 @@ void mixer_ch_set_pos(int ch, float pos) {
 float mixer_ch_get_pos(int ch) {
 	mixer_channel_t *c = &Mixer.channels[ch];
 	assertf(!(c->flags & CH_FLAGS_STEREO_SUB), "mixer_ch_get_pos: cannot call on secondary stereo channel %d", ch);
-	uint32_t pos = c->pos >> (c->flags & CH_FLAGS_BPS_SHIFT);
+	uint64_t pos = c->pos >> (c->flags & CH_FLAGS_BPS_SHIFT);
 	return (float)pos / (float)(1<<MIXER_FX64_FRAC);
 }
 
@@ -487,8 +494,18 @@ static void mixer_exec(int32_t *out, int num_samples) {
 			int len = ch->len >> bps_fx64;
 			int loop_len = ch->loop_len >> bps_fx64;
 			int wpos = ch->pos >> bps_fx64;
+			// Calculate how many samples we need to have available for this
+			// frame. We used to only calculate the last sample, but in the unlikely
+			// case the playback rate is much higher than the output rate,
+			// this might cause a seek in the waveform (eg: if we play
+			// one sample every 10, we don't want to cause a seek forward by 9,
+			// between the last sample of this frame and the first sample of
+			// next frame). Seeking creates problem with compressed streams, so
+			// we want to avoid it.
 			int wlast = (ch->pos + ch->step*(num_samples-1)) >> bps_fx64;
-			int wlen = wlast-wpos+1;
+			int wnext = (ch->pos + ch->step*num_samples) >> bps_fx64;
+			int wlen = MAX(wlast-wpos+1, wnext-wpos);
+
 			assertf(wlen >= 0, "channel %d: wpos overflow", i);
 			tracef("ch:%d wpos:%x wlen:%x len:%x loop_len:%x sbuf_size:%x\n", i, wpos, wlen, len, loop_len, sbuf->size);
 
@@ -547,6 +564,8 @@ static void mixer_exec(int32_t *out, int num_samples) {
 					tracef("mixer_poll: wrapping sample buffer loop: sbuf->wpos:%x len:%x\n", sbuf->wpos, len);
 					samplebuffer_discard(sbuf, wpos);
 					sbuf->wpos = waveform_wrap_wpos(sbuf->wpos, len, loop_len);
+					if (sbuf->wnext >= 0)
+						sbuf->wnext = sbuf->wpos + sbuf->widx;
 					int wpos2 = waveform_wrap_wpos(wpos, len, loop_len);
 					ch->pos -= (int64_t)(wpos-wpos2) << bps_fx64;
 					wpos = wpos2;
@@ -648,7 +667,6 @@ static void mixer_exec(int32_t *out, int num_samples) {
 	}
 
 	uint32_t t0 = TICKS_READ();
-
 	rspq_highpri_begin();
 	rspq_write(__mixer_overlay_id, 0,
 		(((uint32_t)MIXER_FX16(gvol)) & 0xFFFF),

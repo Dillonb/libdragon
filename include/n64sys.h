@@ -6,6 +6,7 @@
 #ifndef __LIBDRAGON_N64SYS_H
 #define __LIBDRAGON_N64SYS_H
 
+#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <assert.h>
@@ -13,7 +14,20 @@
 #include "cop1.h"
 
 /**
- * @addtogroup n64sys
+ * @defgroup n64sys N64 System Interface
+ * @ingroup lowlevel
+ * @brief N64 bootup and cache interfaces.
+ *
+ * The N64 system interface provides a way for code to interact with
+ * the memory setup on the system.  This includes cache operations to
+ * invalidate or flush regions and the ability to set the boot CIC.
+ * The @ref system use the knowledge of the boot CIC to properly determine
+ * if the expansion pak is present, giving 4 MiB of additional memory.  Aside
+ * from this, the MIPS r4300 uses a manual cache management strategy, where
+ * SW that requires passing buffers to and from hardware components using
+ * DMA controllers needs to ensure that cache and RDRAM are in sync.  A
+ * set of operations to invalidate and/or write back cache is provided for
+ * both instruction cache and data cache.
  * @{
  */
 
@@ -134,15 +148,23 @@ extern char __bss_end[];
 #define MEMORY_BARRIER() asm volatile ("" : : : "memory")
 
 /**
- * @brief Returns the COP0 register $9 (count).
+ * @brief Returns the 32-bit hardware tick counter
  *
- * The coprocessor 0 (system control coprocessor - COP0) register $9 is
- * incremented at "half maximum instruction issue rate" which is the processor
- * clock speed (93.75MHz) divided by two. (also see TICKS_PER_SECOND) It will
- * always produce a 32-bit unsigned value which overflows back to zero in
- * 91.625 seconds. The counter will increment irrespective of instructions
- * actually being executed. This macro is for reading that value.
- * Do not use for comparison without special handling.
+ * This macro returns the current value of the hardware tick counter,
+ * present in the CPU coprocessor 0. The counter increments at half of the
+ * processor clock speed (see #TICKS_PER_SECOND), and overflows every
+ * 91.625 seconds.
+ * 
+ * It is fine to use this hardware counter for measuring small time intervals,
+ * as long as #TICKS_DISTANCE or #TICKS_BEFORE are used to compare different
+ * counter reads, as those macros correctly handle overflows.
+ * 
+ * Most users might find more convenient to use #get_ticks(), a similar function
+ * that returns a 64-bit counter with the same frequency that never overflows.
+ * 
+ * @see #TICKS_BEFORE
+ * @see #TICKS_DISTANCE
+ * @see #get_ticks
  */
 #define TICKS_READ() C0_COUNT()
 
@@ -154,7 +176,7 @@ extern char __bss_end[];
 #define TICKS_PER_SECOND (CPU_FREQUENCY/2)
 
 /**
- * @brief The signed difference of time between "from" and "to".
+ * @brief Calculate the time passed between two ticks
  *
  * If "from" is before "to", the distance in time is positive,
  * otherwise it is negative.
@@ -168,52 +190,108 @@ extern char __bss_end[];
  * @brief Returns true if "t1" is before "t2".
  *
  * This is similar to t1 < t2, but it correctly handles timer overflows
- * which are very frequent. Notice that the N64 counter overflows every
+ * which are very frequent. Notice that the hardware counter overflows every
  * ~91 seconds, so it's not possible to compare times that are more than
  * ~45 seconds apart.
+ * 
+ * Use #get_ticks() to get a 64-bit counter that never overflows.
+ * 
+ * @see #get_ticks
  */
 #define TICKS_BEFORE(t1, t2) ({ TICKS_DISTANCE(t1, t2) > 0; })
 
 /**
- * @brief Returns equivalent count ticks for the given millis.
+ * @brief Returns equivalent count ticks for the given milliseconds.
  */
-#define TICKS_FROM_MS(val) ((uint32_t)((val) * (TICKS_PER_SECOND / 1000)))
+#define TICKS_FROM_MS(val) (((val) * (TICKS_PER_SECOND / 1000)))
+
+/**
+ * @brief Returns equivalent count ticks for the given microseconds.
+ */
+#define TICKS_FROM_US(val) (((val) * (8 * TICKS_PER_SECOND / 1000000) / 8))
+
+/**
+ * @brief Returns equivalent count ticks for the given microseconds.
+ */
+#define TICKS_TO_US(val) (((val) * 8 / (8 * TICKS_PER_SECOND / 1000000)))
+
+/**
+ * @brief Returns equivalent count ticks for the given microseconds.
+ */
+#define TICKS_TO_MS(val) (((val) / (TICKS_PER_SECOND / 1000)))
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/** @brief Return true if we are running on a iQue player */
 bool sys_bbplayer(void);
 
+/**
+ * @brief Return the boot CIC
+ *
+ * @return The boot CIC as an integer
+ */
 int sys_get_boot_cic();
+
+/**
+ * @brief Set the boot CIC
+ *
+ * This function will set the boot CIC.  If the value isn't in the range
+ * of 6102-6106, the boot CIC is set to the default of 6102.
+ *
+ * @param[in] bc
+ *            Boot CIC value
+ */
 void sys_set_boot_cic(int bc);
+
 /**
  * @brief Read the number of ticks since system startup
  *
- * @note Also see the TICKS_READ macro
+ * The frequency of this counter is #TICKS_PER_SECOND. The counter will
+ * never overflow, being a 64-bit number.
  *
  * @return The number of ticks since system startup
  */
-inline volatile unsigned long get_ticks(void)
-{
-    return TICKS_READ();
-}
+uint64_t get_ticks(void);
+
+/**
+ * @brief Read the number of microseconds since system startup
+ *
+ * This is similar to #get_ticks, but converts the result in integer
+ * microseconds for convenience.
+ * 
+ * @return The number of microseconds since system startup
+ */
+uint64_t get_ticks_us(void);
 
 /**
  * @brief Read the number of millisecounds since system startup
- *
- * @note It will wrap back to 0 after about 91.6 seconds.
- * Also see the TICKS_READ macro. Do not use for comparison
- * without special handling.
- *
+ * 
+ * This is similar to #get_ticks, but converts the result in integer
+ * milliseconds for convenience.
+ * 
  * @return The number of millisecounds since system startup
  */
-inline volatile unsigned long get_ticks_ms(void)
-{
-    return TICKS_READ() / (TICKS_PER_SECOND / 1000);
-}
+uint64_t get_ticks_ms(void);
 
+/**
+ * @brief Spin wait until the number of ticks have elapsed
+ *
+ * @param[in] wait
+ *            Number of ticks to wait
+ *            Maximum accepted value is 0xFFFFFFFF ticks
+ */
 void wait_ticks( unsigned long wait );
+
+/**
+ * @brief Spin wait until the number of milliseconds have elapsed
+ *
+ * @param[in] wait_ms
+ *            Number of milliseconds to wait
+ *            Maximum accepted value is 91625 ms
+ */
 void wait_ms( unsigned long wait_ms );
 
 /**
@@ -248,19 +326,157 @@ void wait_ms( unsigned long wait_ms );
 })
 
 void __data_cache_hit_invalidate(volatile void * addr, unsigned long length);
+
+/**
+ * @brief Force a data cache writeback over a memory region
+ *
+ * Use this to force cached memory to be written to RDRAM.
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void data_cache_hit_writeback(volatile const void *, unsigned long);
+
+/**
+ * @brief Force a data cache writeback invalidate over a memory region
+ *
+ * Use this to force cached memory to be written to RDRAM
+ * and then invalidate the corresponding cache lines.
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void data_cache_hit_writeback_invalidate(volatile void *, unsigned long);
+
+/**
+ * @brief Force a data cache index writeback invalidate over a memory region
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void data_cache_index_writeback_invalidate(volatile void *, unsigned long);
+
+/**
+ * @brief Force a data cache writeback invalidate over whole memory
+ *
+ * Also see #data_cache_hit_writeback_invalidate
+ *
+ */
 void data_cache_writeback_invalidate_all(void);
+
+/**
+ * @brief Force an instruction cache writeback over a memory region
+ *
+ * Use this to force cached memory to be written to RDRAM.
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void inst_cache_hit_writeback(volatile const void *, unsigned long);
+
+/**
+ * @brief Force an instruction cache invalidate over a memory region
+ *
+ * Use this to force the N64 to update cache from RDRAM.
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void inst_cache_hit_invalidate(volatile void *, unsigned long);
+
+/**
+ * @brief Force an instruction cache index invalidate over a memory region
+ *
+ * @param[in] addr
+ *            Pointer to memory in question
+ * @param[in] length
+ *            Length in bytes of the data pointed at by addr
+ */
 void inst_cache_index_invalidate(volatile void *, unsigned long);
+
+/**
+ * @brief Force an instruction cache invalidate over whole memory
+ *
+ * Also see #inst_cache_hit_invalidate
+ *
+ */
 void inst_cache_invalidate_all(void);
 
+
+/**
+ * @brief Get amount of available memory.
+ *
+ * @return amount of total available memory in bytes.
+ */
 int get_memory_size();
+
+/**
+ * @brief Is expansion pak in use.
+ *
+ * Checks whether the maximum available memory has been expanded to 8 MiB
+ *
+ * @return true if expansion pak detected, false otherwise.
+ * 
+ * @note On iQue, this function returns true only if the game has been assigned
+ *       exactly 8 MiB of RAM.
+ */
 bool is_memory_expanded();
+
+/**
+ * @brief Allocate a buffer that will be accessed as uncached memory.
+ * 
+ * This function allocates a memory buffer that can be safely read and written
+ * through uncached memory accesses only. It makes sure that that the buffer
+ * does not share any cacheline with other buffers in the heap, and returns
+ * a pointer in the uncached segment (0xA0000000).
+ * 
+ * The buffer contents are uninitialized.
+ * 
+ * To free the buffer, use #free_uncached.
+ * 
+ * @param[in]  size  The size of the buffer to allocate
+ *
+ * @return a pointer to the start of the buffer (in the uncached segment)
+ * 
+ * @see #free_uncached
+ */
 void *malloc_uncached(size_t size);
+
+/**
+ * @brief Allocate a buffer that will be accessed as uncached memory, specifying alignment
+ * 
+ * This function is similar to #malloc_uncached, but allows to force a higher
+ * alignment to the buffer (just like memalign does). See #malloc_uncached
+ * for reference.
+ * 
+ * @param[in]  align The alignment of the buffer in bytes (eg: 64)
+ * @param[in]  size  The size of the buffer to allocate
+ * 
+ * @return a pointer to the start of the buffer (in the uncached segment)
+ * 
+ * @see #malloc_uncached 
+ */
 void *malloc_uncached_aligned(int align, size_t size);
+
+/**
+ * @brief Free an uncached memory buffer
+ * 
+ * This function frees a memory buffer previously allocated via #malloc_uncached.
+ * 
+ * @param[in]  buf  The buffer to free
+ * 
+ * @see #malloc_uncached
+ */
 void free_uncached(void *buf);
 
 /** @brief Type of TV video output */
@@ -270,6 +486,13 @@ typedef enum {
     TV_MPAL = 2      ///< Video output is M-PAL
 } tv_type_t;
 
+/**
+ * @brief Is system NTSC/PAL/MPAL
+ * 
+ * Checks enum hard-coded in PIF BootROM to indicate the tv type of the system.
+ * 
+ * @return enum value indicating PAL, NTSC or MPAL
+ */
 tv_type_t get_tv_type();
 
 

@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 bool flag_verbose = false;
+bool flag_debug = false;
 
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	#define LE32_TO_HOST(i) __builtin_bswap32(i)
@@ -42,6 +43,7 @@ void fatal(const char *str, ...) {
 	exit(1);
 }
 
+char* changeext(const char* fn, char *ext);
 
 /************************************************************************************
  *  CONVERTERS
@@ -62,15 +64,19 @@ void usage(void) {
 	printf("   audioconv64 [flags] <file-or-dir> [[flags] <file-or-dir>..]\n");
 	printf("\n");
 	printf("Supported conversions:\n");
-	printf("   * WAV => WAV64 (Waveforms)\n");
+	printf("   * WAV/MP3 => WAV64 (Waveforms)\n");
 	printf("   * XM  => XM64  (MilkyTracker, OpenMPT)\n");
 	printf("   * YM  => YM64  (Arkos Tracker II)\n");
 	printf("\n");
 	printf("Global options:\n");
 	printf("   -o / --output <dir>       Specify output directory\n");
 	printf("   -v / --verbose            Verbose mode\n");
+	printf("   -d / --debug              Dump uncompressed files in output directory for debugging\n");
 	printf("\n");
-	printf("WAV options:\n");
+	printf("WAV/MP3 options:\n");
+	printf("   --wav-mono                Force mono output\n");
+	printf("   --wav-resample <N>        Resample to a different sample rate\n");
+	printf("   --wav-compress <0|1>      Enable compression: 0=none, 1=vadpcm (default)\n");
 	printf("   --wav-loop <true|false>   Activate playback loop by default\n");
 	printf("   --wav-loop-offset <N>     Set looping offset (in samples; default: 0)\n");
 	printf("\n");
@@ -79,7 +85,7 @@ void usage(void) {
 	printf("\n");
 }
 
-char* changeext(char* fn, char *ext) {
+char* changeext(const char* fn, char *ext) {
 	char buf[4096];
 	strcpy(buf, fn);
 	*strrchr(buf, '.') = '\0';
@@ -94,15 +100,15 @@ void convert(char *infn, char *outfn1) {
 		return;
 	}
 
-	if (strcmp(ext, ".wav") == 0 || strcmp(ext, ".WAV") == 0) {
+	if (strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".aiff") == 0 || strcasecmp(ext, ".mp3") == 0) {
 		char *outfn = changeext(outfn1, ".wav64");
 		wav_convert(infn, outfn);
 		free(outfn);
-	} else if (strcmp(ext, ".xm") == 0 || strcmp(ext, ".XM") == 0) {
+	} else if (strcasecmp(ext, ".xm") == 0) {
 		char *outfn = changeext(outfn1, ".xm64");
 		xm_convert(infn, outfn);
 		free(outfn);
-	} else if (strcmp(ext, ".ym") == 0 || strcmp(ext, ".YM") == 0) {
+	} else if (strcasecmp(ext, ".ym") == 0) {
 		char *outfn = changeext(outfn1, ".ym64");
 		ym_convert(infn, outfn);
 		free(outfn);
@@ -188,12 +194,17 @@ int main(int argc, char *argv[]) {
 		if (argv[i][0] == '-') {	
 			if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
 				flag_verbose = true;
+			} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+				usage();
+				return 0;
 			} else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--output")) {
 				if (++i == argc) {
 					fprintf(stderr, "missing argument for -o/--output\n");
 					return 1;
 				}
 				outdir = argv[i];
+			} else if (!strcmp(argv[i], "-d") || !strcmp(argv[i], "--debug")) {
+				flag_debug = true;
 			} else if (!strcmp(argv[i], "--wav-loop")) {
 				if (++i == argc) {
 					fprintf(stderr, "missing argument for --wav-loop\n");
@@ -218,6 +229,28 @@ int main(int argc, char *argv[]) {
 					return 1;
 				}
 				flag_wav_looping = true;
+			} else if (!strcmp(argv[i], "--wav-mono")) {
+				flag_wav_mono = true;
+			} else if (!strcmp(argv[i], "--wav-compress")) {
+				if (++i == argc) {
+					fprintf(stderr, "missing argument for --wav-compress\n");
+					return 1;
+				}
+				flag_wav_compress = atoi(argv[i]);
+				if (flag_wav_compress != 0 && flag_wav_compress != 1 && flag_wav_compress != 3) {
+					fprintf(stderr, "invalid argument for --wav-compress: %s\n", argv[i]);
+					return 1;
+				}
+			} else if (!strcmp(argv[i], "--wav-resample")) {
+				if (++i == argc) {
+					fprintf(stderr, "missing argument for --wav-resample\n");
+					return 1;
+				}
+				flag_wav_resample = atoi(argv[i]);
+				if (flag_wav_resample < 1 || flag_wav_resample > 48000) {
+					fprintf(stderr, "invalid argument for --wav-resample: %s\n", argv[i]);
+					return 1;
+				}
 			} else if (!strcmp(argv[i], "--ym-compress")) {
 				if (++i == argc) {
 					fprintf(stderr, "missing argument for --ym-compress\n");
